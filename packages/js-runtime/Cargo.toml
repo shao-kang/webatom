@@ -13,3 +13,4 @@ path = "src/main.rs"
 
 [dependencies]
 rquickjs = { version = "0.9", features = ["full"] }
+tokio = { version = "1", features = ["rt", "time", "macros"] }

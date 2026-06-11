@@ -1,12 +1,7 @@
-use std::collections::HashMap;
-use rquickjs::Runtime;
-
 mod resolver;
 mod loader;
+mod setup;
 
 pub use resolver::EsmResolver;
 pub use loader::FileLoader;
-
-pub fn setup_module_system(runtime: &Runtime, import_map: HashMap<String, String>) {
-    runtime.set_loader(EsmResolver::new(import_map), FileLoader);
-}
+pub use setup::setup_module_system;

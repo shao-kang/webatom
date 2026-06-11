@@ -51,7 +51,7 @@
 - 使用目录同名入口文件，不使用 `mod.rs`：
   ```
   src/
-  ├── module.rs        ✓  (代替 src/module/mod.rs)
+  ├── module.rs        ✓  (代替 src/module/mod.rs, 如果有子模块目录 ，则使用目录同名入口文件只写导出，不写实现)
   └── module/
       ├── resolver.rs
       └── loader.rs

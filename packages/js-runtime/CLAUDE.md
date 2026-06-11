@@ -106,6 +106,117 @@ JS 执行在单一 JS 线程，I/O（网络、文件）在 Rust/native 线程异
 
 
 
+## Extension 机制
+
+### 设计目标
+
+让每个 Web API 模块（console、timer、fetch、DOM 等）**自描述、自注册**，运行时只负责按顺序调用，不关心具体有哪些 Extension。参考 Deno ops 的扩展模型和 LLRT 的 `ModuleBuilder` 模式。
+
+### 两条注册路径
+
+| 路径 | 示例 | JS 侧用法 |
+|---|---|---|
+| 全局变量（flat） | `setTimeout`、`fetch` | `setTimeout(fn, 100)` |
+| 全局变量（namespace） | `console`、`navigator` | `console.log(...)` |
+| JS 模块 | `fs`、`path` | `import { readFile } from 'fs'` |
+
+同一个 Extension 可以同时注册多条路径（例如 `fetch` 既是全局函数，也可作为模块导出）。
+
+### Extension trait
+
+```rust
+pub trait Extension {
+    fn name(&self) -> &'static str;
+
+    /// 注册全局变量。namespace=None → flat（直接挂 globalThis），
+    /// namespace=Some("console") → globalThis.console = { ... }
+    fn globals<'js>(&self, ctx: &Ctx<'js>) -> Result<()> { Ok(()) }
+
+    /// 若扩展需要注册为可 import 的 JS 模块，返回模块名
+    fn module_name(&self) -> Option<&'static str> { None }
+
+    /// 填充模块导出（仅在 module_name() 返回 Some 时调用）
+    fn module_init<'js>(&self, ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> { Ok(()) }
+}
+```
+
+### 共享状态
+
+使用 rquickjs 内置的 `ctx.store_userdata` / `ctx.userdata::<T>()` 替代手传 `Arc<Mutex<T>>`：
+
+```rust
+// Extension setup 时存入
+ctx.store_userdata(TimerState::new())?;
+
+// JS 回调触发时取出
+let state = ctx.userdata::<TimerState>().unwrap();
+state.schedule(...);
+```
+
+`Ctx` 本身就是共享上下文，`store_userdata` 是类型安全的 `TypeMap`，不同 Extension 按类型 key 独立存取，互不干扰。
+
+### 同步 vs 异步函数
+
+不在 `Extension` trait 层面区分，由 Extension 自己在 `globals()` 中决定：
+
+```rust
+// 同步 — 直接返回值
+obj.set("readFileSync", Function::new(ctx, |path: String| {
+    std::fs::read_to_string(path).map_err(...)
+}))?;
+
+// 异步 — 返回 Promise，tokio 线程池执行 I/O
+obj.set("readFile", Function::new(ctx, |ctx: Ctx<'_>, path: String| {
+    let (promise, resolve, reject) = Promise::new(&ctx)?;
+    tokio::spawn(async move {
+        match tokio::fs::read_to_string(path).await {
+            Ok(s)  => resolve.call::<_, ()>((s,)),
+            Err(e) => reject.call::<_, ()>((e.to_string(),)),
+        }
+    });
+    Ok::<Promise, _>(promise)
+}))?;
+```
+
+### Builder 用法
+
+```rust
+JsRuntime::builder()
+    .extension(ConsoleExtension)
+    .extension(TimerExtension)
+    .extension(FetchExtension)     // 未来
+    .build()?
+    .eval_module("index.js", source)?
+    .run()
+    .await
+```
+
+### 文件结构规划
+
+```
+src/
+├── extension.rs           ← Extension trait 定义
+├── extension/
+│   └── registry.rs        ← 遍历 extensions、调用 globals() / module_init()
+├── runtime.rs             ← JsRuntime builder（整合 EventLoop + Context + extensions）
+└── web_api/
+    ├── console.rs         ← ConsoleExtension（实现 Extension trait）
+    ├── timer.rs           ← TimerExtension（实现 Extension trait，状态改用 store_userdata）
+    └── setup.rs           ← 可逐步删除，逻辑迁移进各 Extension::globals()
+```
+
+### 与 Deno / LLRT 的对比
+
+| 特性 | Deno ops | LLRT ModuleBuilder | webAtom Extension |
+|---|---|---|---|
+| 注册全局 | Extension JS snippet | `with_global(init_fn)` | `Extension::globals()` |
+| 注册模块 | Extension + ModuleDef | `with_module(ModuleDef)` | `Extension::module_init()` |
+| 共享状态 | OpState (TypeMap) | `ctx.store_userdata` | `ctx.store_userdata` |
+| 同步/异步 | `#[op2]` / `#[op2(async)]` | `Func::from(async \|\| ...)` | 返回值是否为 Promise |
+| JS 胶水代码 | `include_js_files!` | `include_js_files!` | `Extension::globals()` 内 `ctx.eval()` |
+
+---
+
 ## 参考实现
 
 - [LLRT](https://github.com/awslabs/llrt) — AWS 基于 QuickJS 的轻量 JS 运行时，重点参考其 ESM 加载器、timer 实现及 Rust 侧 event loop 驱动方式
