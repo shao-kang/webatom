@@ -1,34 +1,38 @@
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
 use rquickjs::{Ctx, Function, Persistent, Result, Value};
-use crate::event_loop::task::MacroTask;
+use tokio::sync::oneshot;
+
+use crate::event_loop::ActiveHandles;
 
 struct TimerState {
     next_id: u32,
-    cancelled: std::collections::HashMap<u32, Arc<AtomicBool>>,
+    cancel_senders: HashMap<u32, oneshot::Sender<()>>,
 }
 
 impl TimerState {
     fn new() -> Self {
-        Self { next_id: 1, cancelled: Default::default() }
+        Self { next_id: 1, cancel_senders: HashMap::new() }
     }
 
-    fn register(&mut self) -> (u32, Arc<AtomicBool>) {
+    fn register(&mut self) -> (u32, oneshot::Receiver<()>) {
         let id = self.next_id;
         self.next_id += 1;
-        let flag = Arc::new(AtomicBool::new(false));
-        self.cancelled.insert(id, flag.clone());
-        (id, flag)
+        let (tx, rx) = oneshot::channel();
+        self.cancel_senders.insert(id, tx);
+        (id, rx)
     }
 
     fn cancel(&mut self, id: u32) {
-        if let Some(flag) = self.cancelled.remove(&id) {
-            flag.store(true, Ordering::Relaxed);
+        if let Some(tx) = self.cancel_senders.remove(&id) {
+            let _ = tx.send(());
         }
+    }
+
+    fn fired(&mut self, id: u32) {
+        self.cancel_senders.remove(&id);
     }
 }
 
@@ -37,15 +41,24 @@ fn spawn_timeout<'js>(
     func: Function<'js>,
     delay: u64,
     state: &Arc<Mutex<TimerState>>,
-    macro_queue: &Rc<RefCell<VecDeque<MacroTask>>>,
+    handles: &ActiveHandles,
 ) -> Result<u32> {
-    let (id, cancelled) = state.lock().unwrap().register();
+    let (id, cancel_rx) = state.lock().unwrap().register();
+    let guard = handles.acquire();
     let persistent = Persistent::save(&ctx, func);
-    let queue = macro_queue.clone();
+    let state2 = state.clone();
+    let ctx2 = ctx.clone();
     ctx.spawn(async move {
-        tokio::time::sleep(Duration::from_millis(delay)).await;
-        if cancelled.load(Ordering::Relaxed) { return; }
-        queue.borrow_mut().push_back(MacroTask { func: persistent });
+        let _guard = guard;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(delay)) => {
+                state2.lock().unwrap().fired(id);
+                if let Ok(f) = persistent.restore(&ctx2) {
+                    let _ = f.call::<_, Value>(());
+                }
+            }
+            _ = cancel_rx => {}
+        }
     });
     Ok(id)
 }
@@ -55,31 +68,30 @@ fn spawn_interval<'js>(
     func: Function<'js>,
     delay: u64,
     state: &Arc<Mutex<TimerState>>,
+    handles: &ActiveHandles,
 ) -> Result<u32> {
-    let (id, cancelled) = state.lock().unwrap().register();
+    let (id, cancel_rx) = state.lock().unwrap().register();
+    let guard = handles.acquire();
     let mut persistent = Persistent::save(&ctx, func);
     let ctx2 = ctx.clone();
     ctx.spawn(async move {
+        let _guard = guard;
+        let mut cancel_rx = cancel_rx;
         loop {
-            tokio::time::sleep(Duration::from_millis(delay)).await;
-            if cancelled.load(Ordering::Relaxed) { break; }
-            let Ok(f) = persistent.restore(&ctx2) else { break };
-            persistent = Persistent::save(&ctx2, f.clone());
-            let _ = f.call::<_, Value>(());
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(delay)) => {
+                    let Ok(f) = persistent.restore(&ctx2) else { break };
+                    persistent = Persistent::save(&ctx2, f.clone());
+                    let _ = f.call::<_, Value>(());
+                }
+                _ = &mut cancel_rx => { break; }
+            }
         }
     });
     Ok(id)
 }
 
-pub struct TimerExtension {
-    macro_queue: Rc<RefCell<VecDeque<MacroTask>>>,
-}
-
-impl TimerExtension {
-    pub fn new(macro_queue: Rc<RefCell<VecDeque<MacroTask>>>) -> Self {
-        Self { macro_queue }
-    }
-}
+pub struct TimerExtension;
 
 impl crate::extension::Extension for TimerExtension {
     fn name(&self) -> &'static str {
@@ -87,21 +99,22 @@ impl crate::extension::Extension for TimerExtension {
     }
 
     fn globals<'js>(&self, ctx: &Ctx<'js>) -> Result<()> {
+        let handles = self.active_handles(ctx);
         let state = Arc::new(Mutex::new(TimerState::new()));
-        let queue = self.macro_queue.clone();
 
         let set_timeout = {
             let state = state.clone();
-            let queue = queue.clone();
+            let handles = handles.clone();
             Function::new(ctx.clone(), move |ctx, func, delay: u64| {
-                spawn_timeout(ctx, func, delay, &state, &queue)
+                spawn_timeout(ctx, func, delay, &state, &handles)
             })?
         };
 
         let set_interval = {
             let state = state.clone();
+            let handles = handles.clone();
             Function::new(ctx.clone(), move |ctx, func, delay: u64| {
-                spawn_interval(ctx, func, delay, &state)
+                spawn_interval(ctx, func, delay, &state, &handles)
             })?
         };
 

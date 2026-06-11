@@ -52,10 +52,14 @@ impl JsRuntimeBuilder {
 
         if self.with_default_extensions {
             self.registry.register(ConsoleExtension);
-            self.registry.register(TimerExtension::new(event_loop.macro_sender()));
+            self.registry.register(TimerExtension);
         }
 
-        context.with(|ctx| self.registry.apply(&ctx)).await?;
+        let handles = event_loop.active_handles();
+        context.with(|ctx| {
+            ctx.store_userdata(handles)?;
+            self.registry.apply(&ctx)
+        }).await?;
 
         Ok(JsRuntime { context, event_loop })
     }

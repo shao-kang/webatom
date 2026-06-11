@@ -1,5 +1,5 @@
 pub mod registry;
-pub mod extension_trait;
+pub mod extension_impl;
 
 pub use registry::ExtensionRegistry;
-pub use extension_trait::Extension;
+pub use extension_impl::Extension;
