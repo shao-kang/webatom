@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rquickjs::{CatchResultExt, Context, Module, Runtime};
+use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, Module};
 
 use crate::event_loop::EventLoop;
 use crate::extension::{Extension, ExtensionRegistry};
@@ -8,8 +8,8 @@ use crate::module::setup_module_system;
 use crate::web_api::{ConsoleExtension, TimerExtension};
 
 pub struct JsRuntime {
-    // Field order = drop order. event_loop (which holds Runtime) must be dropped last.
-    context: Context,
+    // Field order = drop order: context must be dropped before the runtime inside event_loop.
+    context: AsyncContext,
     event_loop: EventLoop,
 }
 
@@ -28,7 +28,6 @@ impl JsRuntimeBuilder {
         }
     }
 
-    /// Disable the built-in console + timer extensions (for custom setups).
     pub fn no_defaults(mut self) -> Self {
         self.with_default_extensions = false;
         self
@@ -44,26 +43,21 @@ impl JsRuntimeBuilder {
         self
     }
 
-    pub fn build(mut self) -> rquickjs::Result<JsRuntime> {
-        let runtime = Runtime::new()?;
-        setup_module_system(&runtime, self.import_map);
+    pub async fn build(mut self) -> rquickjs::Result<JsRuntime> {
+        let runtime = AsyncRuntime::new()?;
+        setup_module_system(&runtime, self.import_map).await;
 
         let event_loop = EventLoop::new(runtime);
-        let context = Context::full(event_loop.runtime())?;
+        let context = AsyncContext::full(event_loop.runtime()).await?;
 
-        // Register default extensions with access to internal handles.
         if self.with_default_extensions {
             self.registry.register(ConsoleExtension);
-            self.registry.register(TimerExtension::new(event_loop.timers()));
+            self.registry.register(TimerExtension::new(event_loop.macro_sender()));
         }
 
-        // Apply all extensions once at build time.
-        context.with(|ctx| self.registry.apply(&ctx))?;
+        context.with(|ctx| self.registry.apply(&ctx)).await?;
 
-        Ok(JsRuntime {
-            context,
-            event_loop,
-        })
+        Ok(JsRuntime { context, event_loop })
     }
 }
 
@@ -72,34 +66,37 @@ impl JsRuntime {
         JsRuntimeBuilder::new()
     }
 
-    /// Evaluate an ES module. Can be called multiple times.
-    pub fn eval_module(self, name: &str, source: impl Into<Vec<u8>>) -> rquickjs::Result<Self> {
-        self.context.with(|ctx| {
-            Module::evaluate(ctx.clone(), name, source)
-                .catch(&ctx)
-                .map_err(|e| e.throw(&ctx))?
-                .finish::<()>()
-                .catch(&ctx)
-                .map_err(|e| e.throw(&ctx))
-        })?;
+    pub async fn eval_module(self, name: &str, source: impl Into<Vec<u8>>) -> rquickjs::Result<Self> {
+        let bytes: Vec<u8> = source.into();
+        let name = name.to_owned();
+        self.context
+            .with(|ctx| {
+                Module::evaluate(ctx.clone(), name.as_str(), bytes)
+                    .catch(&ctx)
+                    .map_err(|e| e.throw(&ctx))?
+                    .finish::<()>()
+                    .catch(&ctx)
+                    .map_err(|e| e.throw(&ctx))
+            })
+            .await?;
         Ok(self)
     }
 
-    /// Evaluate a JS expression and return the result.
-    pub fn eval<T>(&self, source: &str) -> rquickjs::Result<T>
+    pub async fn eval<T>(&self, source: &str) -> rquickjs::Result<T>
     where
         T: for<'js> rquickjs::FromJs<'js>,
     {
-        self.context.with(|ctx| {
-            ctx.eval::<T, _>(source)
-                .catch(&ctx)
-                .map_err(|e| e.throw(&ctx))
-        })
+        self.context
+            .with(|ctx| {
+                ctx.eval::<T, _>(source)
+                    .catch(&ctx)
+                    .map_err(|e| e.throw(&ctx))
+            })
+            .await
     }
 
-    /// Drive the event loop until all pending work is done.
-    pub async fn run(mut self) -> rquickjs::Result<()> {
-        self.event_loop.run(&self.context).await
+    pub async fn run(self) -> rquickjs::Result<()> {
+        let Self { context, event_loop } = self;
+        event_loop.run(&context).await
     }
 }
-

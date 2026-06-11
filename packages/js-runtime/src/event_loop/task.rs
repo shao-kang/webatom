@@ -1,11 +1,11 @@
-use std::time::Duration;
-
 use rquickjs::{Function, Persistent};
 
-pub(crate) enum MacroTask {
-    Timer {
-        id: u32,
-        func: Persistent<Function<'static>>,
-        interval: Option<Duration>,
-    },
+pub struct MacroTask {
+    pub func: Persistent<Function<'static>>,
+}
+
+#[allow(dead_code)]
+pub(crate) struct RafTask {
+    pub id: u32,
+    pub func: Persistent<Function<'static>>,
 }

@@ -16,8 +16,10 @@ async fn main() {
 
     JsRuntime::builder()
         .build()
+        .await
         .unwrap()
         .eval_module(&abs_path_str, source)
+        .await
         .unwrap()
         .run()
         .await
