@@ -1,6 +1,6 @@
 use rquickjs::{Ctx, Result};
 
-use crate::event_loop::ActiveHandles;
+use crate::event_loop::{ActiveHandles, EventLoopHandle};
 
 pub trait Extension {
     fn name(&self) -> &'static str;
@@ -17,9 +17,13 @@ pub trait Extension {
         Ok(())
     }
 
-    fn active_handles<'js>(&self, ctx: &Ctx<'js>) -> ActiveHandles {
-        ctx.userdata::<ActiveHandles>()
-            .expect("ActiveHandles userdata not registered")
+    fn event_loop_handle<'js>(&self, ctx: &Ctx<'js>) -> EventLoopHandle {
+        ctx.userdata::<EventLoopHandle>()
+            .expect("EventLoopHandle userdata not registered")
             .clone()
+    }
+
+    fn active_handles<'js>(&self, ctx: &Ctx<'js>) -> ActiveHandles {
+        self.event_loop_handle(ctx).active_handles
     }
 }

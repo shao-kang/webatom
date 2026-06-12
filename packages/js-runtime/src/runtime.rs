@@ -55,9 +55,9 @@ impl JsRuntimeBuilder {
             self.registry.register(TimerExtension);
         }
 
-        let handles = event_loop.active_handles();
+        let handle = event_loop.handle();
         context.with(|ctx| {
-            ctx.store_userdata(handles)?;
+            ctx.store_userdata(handle)?;
             self.registry.apply(&ctx)
         }).await?;
 

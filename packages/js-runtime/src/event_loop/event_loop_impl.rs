@@ -1,6 +1,5 @@
-use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use rquickjs::{AsyncContext, AsyncRuntime};
 use tokio::sync::mpsc;
@@ -12,11 +11,22 @@ pub struct FrameInfo {
     pub timestamp_ms: f64,
 }
 
+/// Shareable handle stored as context userdata.
+/// Extensions access active_handles, raf_queue and frame_tx through this.
+#[derive(Clone)]
+pub struct EventLoopHandle {
+    pub active_handles: ActiveHandles,
+    pub raf_queue: Arc<Mutex<VecDeque<RafTask>>>,
+    pub frame_tx: mpsc::Sender<FrameInfo>,
+}
+
+unsafe impl<'js> rquickjs::JsLifetime<'js> for EventLoopHandle {
+    type Changed<'to> = EventLoopHandle;
+}
+
 pub struct EventLoop {
+    handle: EventLoopHandle,
     runtime: AsyncRuntime,
-    active_handles: ActiveHandles,
-    raf_queue: Rc<RefCell<VecDeque<RafTask>>>,
-    frame_tx: mpsc::Sender<FrameInfo>,
     frame_rx: mpsc::Receiver<FrameInfo>,
 }
 
@@ -24,10 +34,12 @@ impl EventLoop {
     pub fn new(runtime: AsyncRuntime) -> Self {
         let (frame_tx, frame_rx) = mpsc::channel(1);
         Self {
+            handle: EventLoopHandle {
+                active_handles: ActiveHandles::new(),
+                raf_queue: Arc::new(Mutex::new(VecDeque::new())),
+                frame_tx,
+            },
             runtime,
-            active_handles: ActiveHandles::new(),
-            raf_queue: Rc::new(RefCell::new(VecDeque::new())),
-            frame_tx,
             frame_rx,
         }
     }
@@ -36,26 +48,18 @@ impl EventLoop {
         &self.runtime
     }
 
-    pub fn active_handles(&self) -> ActiveHandles {
-        self.active_handles.clone()
-    }
-
-    pub fn raf_sender(&self) -> Rc<RefCell<VecDeque<RafTask>>> {
-        self.raf_queue.clone()
-    }
-
-    /// Cloneable sender given to the render layer to signal each completed frame.
-    pub fn frame_sender(&self) -> mpsc::Sender<FrameInfo> {
-        self.frame_tx.clone()
+    /// Returns a cloneable handle suitable for storing as context userdata.
+    pub fn handle(&self) -> EventLoopHandle {
+        self.handle.clone()
     }
 
     async fn flush_raf(
-        raf_queue: &Rc<RefCell<VecDeque<RafTask>>>,
+        handle: &EventLoopHandle,
         context: &AsyncContext,
         timestamp_ms: f64,
     ) -> rquickjs::Result<()> {
         loop {
-            let task = raf_queue.borrow_mut().pop_front();
+            let task = handle.raf_queue.lock().unwrap().pop_front();
             let Some(task) = task else { break };
             context
                 .with(|ctx| {
@@ -69,18 +73,18 @@ impl EventLoop {
     }
 
     pub async fn run(mut self, context: &AsyncContext) -> rquickjs::Result<()> {
-        if self.active_handles.count() == 0 {
+        if self.handle.active_handles.count() == 0 {
             return Ok(());
         }
         loop {
             tokio::select! {
                 _ = self.runtime.drive() => {
-                    if self.active_handles.count() == 0 { break; }
+                    if self.handle.active_handles.count() == 0 { break; }
                 }
                 Some(frame) = self.frame_rx.recv() => {
-                    Self::flush_raf(&self.raf_queue, context, frame.timestamp_ms).await?;
+                    Self::flush_raf(&self.handle, context, frame.timestamp_ms).await?;
                 }
-                _ = self.active_handles.wait_idle() => {
+                _ = self.handle.active_handles.wait_idle() => {
                     break;
                 }
             }
