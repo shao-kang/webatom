@@ -7,7 +7,7 @@ pub struct RafTask {
 }
 
 pub struct AfterMicrotaskTask {
-    pub inner: Box<dyn for<'js> FnOnce(Ctx<'js>) -> rquickjs::Result<()> + Send + 'static>,
+    pub inner: Box<dyn for<'js> FnOnce(Ctx<'js>) -> rquickjs::Result<()> + 'static>,
 }
 
 impl AfterMicrotaskTask {
@@ -23,7 +23,7 @@ impl AfterMicrotaskTask {
 
     pub fn from_rust<F>(f: F) -> Self
     where
-        F: for<'js> FnOnce(Ctx<'js>) -> rquickjs::Result<()> + Send + 'static,
+        F: for<'js> FnOnce(Ctx<'js>) -> rquickjs::Result<()> + 'static,
     {
         Self { inner: Box::new(f) }
     }
