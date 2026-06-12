@@ -1,0 +1,10 @@
+[package]
+name = "quickweb-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+slab        = { workspace = true }
+markup5ever = { workspace = true }
+html5ever   = { workspace = true }
+rquickjs    = { workspace = true }

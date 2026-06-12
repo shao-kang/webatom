@@ -1,5 +1,12 @@
 [workspace]
 members = [
     "packages/js-runtime",
+    "packages/dom-extension",
 ]
 resolver = "3"
+
+[workspace.dependencies]
+slab        = "0.4"
+markup5ever = "0.11"
+html5ever   = "0.26"
+rquickjs    = { version = "0.9", features = ["full"] }
