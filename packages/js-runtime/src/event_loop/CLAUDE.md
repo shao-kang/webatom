@@ -1,8 +1,7 @@
 # event_loop 模块
 
 QuickJS 不内建驱动机制，宿主（webAtom）需要在 Rust 侧主动推动引擎执行。本模块实现符合
-[HTML Event Loop 规范](https://html.spec.whatwg.org/multipage/webappapis.html#event-loop-processing-model)
-的事件循环，保证 Promise / timer / I/O 的执行顺序与浏览器一致。
+
 
 ---
 
@@ -33,15 +32,24 @@ impl Drop for HandleGuard {
 }
 ```
 
-### 各类 Handle 的计数规则
+### 两种持活方式
 
-| Handle 类型 | count +1 时机 | count -1 时机 |
+| 方式 | 适用场景 | 说明 |
 |---|---|---|
-| `setTimeout` | 注册时 | 回调执行后（Guard 随 spawn future drop） |
-| `setInterval` | 注册时 | `clearInterval` 时 |
-| `fetch` | 发起请求时 | resolve / reject 时 |
-| `WebSocket` | 连接建立时 | `close()` 或连接断开时 |
-| `requestIdleCallback` | 注册时 | 回调执行后 |
+| **Promise** | 一次性异步操作 | 直接返回 Promise 给 JS，由 JS `await` 持有引用；Rust 侧 `ctx.spawn` 保持 runtime 忙碌，无需手动 acquire Guard |
+| **HandleGuard** | 长期持有 / 可外部取消 | 必须显式 acquire；适合生命周期不绑定单次 Promise、可被外部 cancel 的操作 |
+
+一次性操作（如 `setTimeout`）两种方式均可；长期持有操作（如 `setInterval`、`WebSocket`）**必须使用 HandleGuard**，因为没有单一 Promise 能表达其生命周期。
+
+### 各类 Handle 的推荐实现
+
+| Handle 类型 | 推荐方式 | 释放时机 |
+|---|---|---|
+| `setTimeout` | Promise 或 HandleGuard 均可 | 回调执行后 |
+| `fetch` | **HandleGuard** | resolve / reject / 流关闭时；统一用 HandleGuard 避免普通请求与 SSE 实现分叉 |
+| `requestIdleCallback` | Promise 或 HandleGuard 均可 | 回调执行后 |
+| `setInterval` | **HandleGuard** | `clearInterval` 时 |
+| `WebSocket` | **HandleGuard** | `close()` 或连接断开时 |
 | `requestAnimationFrame` | **不计入** | 帧率由渲染线程驱动，不阻止退出 |
 
 ---
@@ -88,6 +96,10 @@ pub async fn run(&self, context: &AsyncContext) -> rquickjs::Result<()> {
 ② timer / I/O 回调（ctx.spawn 直接在 JS 线程执行）
      → 执行后产生新 microtask → 回到 ①
 
+② ½  after-microtask 回调（drive() 返回后立即执行）
+     MutationObserver / 需在微任务完成后批量通知的 Extension
+     → 执行后产生新 microtask → 下一轮 drive() 时清空
+
 ③ 帧后任务（渲染线程 notify 后才触发）
      rAF 回调 / ResizeObserver / IntersectionObserver
      → 执行后产生新 microtask → 回到 ①
@@ -97,6 +109,49 @@ pub async fn run(&self, context: &AsyncContext) -> rquickjs::Result<()> {
 ```
 
 微任务优先于帧任务的原因：帧任务通常需要读 layout 结果，微任务执行完毕后 DOM 状态才稳定，此时读到的 layout 才准确，与浏览器规范一致。
+
+---
+
+## After-Microtask Queue
+
+### 设计目的
+
+某些 Web API（如 `MutationObserver`）需要在当前微任务队列**完全清空后**、下一个宏任务开始前批量触发回调。`after_microtask_queue` 正是为这类场景提供的扩展点。
+
+### 执行时机
+
+`runtime.drive()` 内部会持续推进 QuickJS job queue，直到 job queue 为空才返回。因此 `drive()` 返回 = microtask checkpoint 完成。`flush_after_microtask` 紧随其后调用，保证：
+
+```
+drive() 返回（microtask 已清空）
+  → flush_after_microtask（逐一执行队列中的回调）
+  → 回调中若产生新 microtask，下一轮 drive() 时清空
+```
+
+### 与 rAF queue 的区别
+
+| 特性 | `raf_queue` | `after_microtask_queue` |
+|---|---|---|
+| 触发来源 | 渲染线程 `frame_tx` 通知 | 每次 `drive()` 完成后 |
+| 触发频率 | 与渲染帧同步（~60fps） | 每个宏任务结束后 |
+| 不计入 active_handles | ✓ | ✓ |
+| 典型用途 | rAF 动画回调 | MutationObserver 批量通知 |
+
+### Extension 接入方式
+
+```rust
+// Extension globals() 中取得 handle
+let handle = ctx.userdata::<EventLoopHandle>().unwrap().clone();
+
+// JS 回调触发时入队
+let func = Persistent::save(&ctx, js_callback);
+handle.after_microtask_queue
+    .lock()
+    .unwrap()
+    .push_back(AfterMicrotaskTask { func });
+```
+
+回调不持有 `HandleGuard`，不阻止进程退出。
 
 ---
 
@@ -156,3 +211,6 @@ tokio Thread Pool（非 JS 线程）
 | HandleGuard 所有权 | Guard 必须随 spawn future 一起 move，不得提前 drop |
 | setInterval 取消竞态 | lazy cancel：AtomicBool，loop 每次 sleep 前检查 |
 | microtask 优先于帧任务 | 帧任务执行前必须先清空 QuickJS job queue |
+# 参考资料
+- [HTML Event Loop 规范](https://html.spec.whatwg.org/multipage/webappapis.html#event-loop-processing-model)
+的事件循环，保证 Promise / timer / I/O 的执行顺序与浏览器一致。
