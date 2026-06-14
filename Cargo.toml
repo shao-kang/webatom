@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "packages/js-runtime",
-    "packages/dom-extension", "packages/js-runtime-macro",
+    "packages/dom-extension", 
+    "packages/js-runtime-macro",
 ]
 resolver = "3"
 
@@ -13,3 +14,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] } 
 rquickjs    = { version = "0.9", features = ["full"] }
 webatom-js-runtime = { path = "packages/js-runtime" }
+webatom-js-runtime-macro = { path = "packages/js-runtime-macro" }

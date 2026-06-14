@@ -158,14 +158,14 @@ TS 源码经 Rolldown 编译为 `crates/dom/js/dist/index.js`（`iife` 格式）
    | 场景 | DOMException 类型 |
    |------|-----------------|
    | 使用已释放节点的 ID | `InvalidStateError` |
-   | `__web_atom_dom.appendChild` 形成循环引用 | `HierarchyRequestError` |
-   | `__web_atom_dom.insertBefore` 的 `refId` 不是 `parentId` 的子节点 | `NotFoundError` |
+   | `appendChild` 形成循环引用 | `HierarchyRequestError` |
+   | `insertBefore` 的 `refId` 不是 `parentId` 的子节点 | `NotFoundError` |
    | 向文本节点插入子节点 | `HierarchyRequestError` |
    | 其他 ID 不存在 | `NotFoundError` |
 5. **unsafe 仅限 rquickjs FFI 边界** — 将 unsafe 集中在一处并加以注释说明。
 6. **按 W3C 继承链增量实现** — 按 `Node → Element → HTMLElement → ...` 顺序实现，不跳过基础接口。
 7. **Rust 只做原语，不做 API** — 凡是可以在 JS 层组合原语实现的功能，不在 Rust 侧重复实现（如 `querySelector`、`innerHTML`、`classList` 等均属 JS 层）。
-8. **`__web_atom_dom.` 前缀方法为内部原语** — 以 `__web_atom_dom.` 开头的方法仅供 JS 层内部调用，不属于对外 DOM API，用户代码不应直接使用。
+8. ** 内部原语** — 以 `import {} from 'webatom_ext_native:dom'` 方式导入 JS 层内部调用，不属于对外 DOM API，用户代码不应直接使用。
 
 ### 类似实现（可借鉴）
 

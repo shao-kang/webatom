@@ -282,10 +282,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "js-runtime-macro"
-version = "0.1.0"
-
-[[package]]
 name = "js-sys"
 version = "0.3.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1037,7 +1033,12 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "webatom-js-runtime-macro",
 ]
+
+[[package]]
+name = "webatom-js-runtime-macro"
+version = "0.1.0"
 
 [[package]]
 name = "winapi"

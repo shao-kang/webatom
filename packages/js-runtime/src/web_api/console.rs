@@ -1,7 +1,8 @@
 use rquickjs::{Ctx, Function, Result, module::{ ModuleDef, Declarations, Exports}};
 
-use crate::extension::{Extension, js_module_init, native_module_init};
-
+use crate::extension::{Extension};
+use webatom_js_runtime_macro::extension_js_module;
+use webatom_js_runtime_macro::extension_native_module;
 
 pub struct ConsoleModule;
 
@@ -54,6 +55,6 @@ impl Extension for ConsoleExtension {
     fn name(&self) -> &'static str {
         "console"
     }
-    native_module_init!(ConsoleModule);
-    js_module_init!(JS_SOURCE);
+    extension_native_module!(ConsoleModule);
+    extension_js_module!(JS_SOURCE);
 }

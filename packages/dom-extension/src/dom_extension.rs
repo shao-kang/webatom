@@ -1,7 +1,7 @@
 use rquickjs::{module::{Declarations, Exports, ModuleDef}, Class, Ctx, Result};
 use js_runtime::Extension;
-use js_runtime::Extension::native_module_init;
-use js_runtime::Extension::js_module_init;
+use js_runtime::native_module_init;
+// use js_runtime::Extension::js_module_init;
 
 use crate::bridge::{DocumentHandle, NodeHandle};
 
@@ -30,7 +30,7 @@ impl Extension for DomExtension {
         "dom"
     }
     native_module_init!(DomModule);
-    js_module_init!("");
+    // js_module_init!("");
 
   
 
