@@ -9,5 +9,7 @@ resolver = "3"
 slab        = "0.4"
 markup5ever = "0.11"
 html5ever   = "0.26"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] } 
 rquickjs    = { version = "0.9", features = ["full"] }
 webatom-js-runtime = { path = "packages/js-runtime" }

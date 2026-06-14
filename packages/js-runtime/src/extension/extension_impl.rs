@@ -1,4 +1,4 @@
-use rquickjs::{module::ModuleDef, Ctx, Result};
+use rquickjs::{ Ctx, Result};
 
 use crate::event_loop::{ActiveHandles, EventLoopHandle};
 
@@ -20,11 +20,8 @@ macro_rules! native_module_init {
 macro_rules! js_module_init {
     ($source:expr) => {
         fn js_module_init<'js>(&self, ctx: &rquickjs::Ctx<'js>) -> rquickjs::Result<()> {
-            use rquickjs::CatchResultExt;
-            rquickjs::Module::evaluate(ctx.clone(), self.module_name(), $source)
-                .catch(ctx)?
-                .finish::<()>()
-                .catch(ctx)?;
+            rquickjs::Module::evaluate(ctx.clone(), self.module_name(), $source)?
+                .finish::<()>()?;
             Ok(())
         }
     };
@@ -51,8 +48,8 @@ pub trait Extension {
     }
     
     // fn native_module(&self) -> Option<fn(&Ctx<'_>) -> rquickjs::Result<()>> { None }
-    fn native_module_init<'js>(&self, ctx: &Ctx<'js>) -> Result<()>{ Ok(()) }
-    fn js_module_init<'js>(&self, ctx: &Ctx<'js>) -> Result<()> {
+    fn native_module_init<'js>(&self, _ctx: &Ctx<'js>) -> Result<()>{ Ok(()) }
+    fn js_module_init<'js>(&self, _ctx: &Ctx<'js>) -> Result<()> {
         Ok(())
     }
 
