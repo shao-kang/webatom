@@ -20,7 +20,11 @@ macro_rules! native_module_init {
 macro_rules! js_module_init {
     ($source:expr) => {
         fn js_module_init<'js>(&self, ctx: &rquickjs::Ctx<'js>) -> rquickjs::Result<()> {
-            rquickjs::Module::evaluate(ctx.clone(), self.module_name(), $source)?.finish::<()>()?;
+            use rquickjs::CatchResultExt;
+            rquickjs::Module::evaluate(ctx.clone(), self.module_name(), $source)
+                .catch(ctx)?
+                .finish::<()>()
+                .catch(ctx)?;
             Ok(())
         }
     };
