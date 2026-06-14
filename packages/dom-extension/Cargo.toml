@@ -8,3 +8,4 @@ slab        = { workspace = true }
 markup5ever = { workspace = true }
 html5ever   = { workspace = true }
 rquickjs    = { workspace = true }
+webatom-js-runtime = { workspace = true }

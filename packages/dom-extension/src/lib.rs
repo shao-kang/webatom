@@ -1,5 +1,7 @@
 pub mod core;
+pub mod bridge;
 mod dom_extension;
 
 pub use core::Document;
-pub use dom_extension::{init, NodeHandle};
+pub use bridge::{DocumentHandle, NodeHandle};
+pub use dom_extension::DomExtension;

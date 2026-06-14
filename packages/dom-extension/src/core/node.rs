@@ -64,5 +64,6 @@ pub struct Node {
     pub parent: Option<usize>,
     pub children: Vec<usize>,
     pub data: NodeData,
-    pub handle_num: u32,
+    pub has_handle: bool,
 }
+

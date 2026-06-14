@@ -1,5 +1,5 @@
 [package]
-name = "web-atom-js-runtime"
+name = "webatom-js-runtime"
 version = "0.1.0"
 edition = "2024"
 

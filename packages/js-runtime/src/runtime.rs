@@ -5,7 +5,7 @@ use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, Module};
 use crate::event_loop::EventLoop;
 use crate::extension::{Extension, ExtensionRegistry};
 use crate::module::setup_module_system;
-use crate::web_api::{ConsoleExtension, TimerExtension};
+use crate::web_api::{ConsoleExtension, };
 
 pub struct JsRuntime {
     // Field order = drop order: context must be dropped before the runtime inside event_loop.
@@ -44,20 +44,22 @@ impl JsRuntimeBuilder {
     }
 
     pub async fn build(mut self) -> rquickjs::Result<JsRuntime> {
+        if self.with_default_extensions {
+            self.registry.register(ConsoleExtension);
+            // self.registry.register(TimerExtension);
+        }
+
         let runtime = AsyncRuntime::new()?;
         setup_module_system(&runtime, self.import_map).await;
 
         let event_loop = EventLoop::new(runtime);
         let context = AsyncContext::full(event_loop.runtime()).await?;
 
-        if self.with_default_extensions {
-            self.registry.register(ConsoleExtension);
-            self.registry.register(TimerExtension);
-        }
-
         let handle = event_loop.handle();
+        let extension_modules = self.registry.extension_modules.clone();
         context.with(|ctx| {
             ctx.store_userdata(handle)?;
+            ctx.store_userdata(extension_modules)?;
             self.registry.apply(&ctx)
         }).await?;
 

@@ -273,6 +273,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "js-runtime-macro"
+version = "0.1.0"
+
+[[package]]
 name = "js-sys"
 version = "0.3.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -508,6 +512,7 @@ dependencies = [
  "markup5ever",
  "rquickjs",
  "slab",
+ "webatom-js-runtime",
 ]
 
 [[package]]
@@ -896,7 +901,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-atom-js-runtime"
+name = "webatom-js-runtime"
 version = "0.1.0"
 dependencies = [
  "rquickjs",

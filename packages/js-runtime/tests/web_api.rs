@@ -1,39 +1,41 @@
 use js_runtime::JsRuntime;
 
-fn build() -> JsRuntime {
-    JsRuntime::builder().build().unwrap()
+async fn build() -> JsRuntime {
+    JsRuntime::builder().build().await.unwrap()
 }
 
-#[test]
-fn setup_web_api_succeeds() {
-    build();
+#[tokio::test]
+async fn setup_web_api_succeeds() {
+    build().await;
 }
 
-#[test]
-fn console_object_is_available() {
-    let rt = build();
-    let result: bool = rt.eval("typeof globalThis.console === 'object'").unwrap();
+#[tokio::test]
+async fn console_object_is_available() {
+    let rt = build().await;
+    let result: bool = rt.eval("typeof globalThis.console === 'object'").await.unwrap();
     assert!(result);
 }
 
-#[test]
-fn console_has_expected_methods() {
-    let rt = build();
+#[tokio::test]
+async fn console_has_expected_methods() {
+    let rt = build().await;
     let result: bool = rt
         .eval("['log','info','warn','error'].every(m => typeof console[m] === 'function')")
+        .await
         .unwrap();
     assert!(result);
 }
 
-#[test]
-fn console_log_does_not_panic() {
-    let rt = build();
-    rt.eval::<()>("console.log('hello', 42, true)").unwrap();
+#[tokio::test]
+async fn console_log_does_not_panic() {
+    let rt = build().await;
+    rt.eval::<()>("console.log('hello', 42, true)").await.unwrap();
 }
 
-#[test]
-fn console_warn_error_do_not_panic() {
-    let rt = build();
+#[tokio::test]
+async fn console_warn_error_do_not_panic() {
+    let rt = build().await;
     rt.eval::<()>("console.warn('warn msg'); console.error('error msg')")
+        .await
         .unwrap();
 }
