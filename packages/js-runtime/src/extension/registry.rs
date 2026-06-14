@@ -43,7 +43,7 @@ impl ExtensionRegistry {
 
     pub fn register(&mut self, ext: impl Extension + 'static) {
         if self.extensions.iter().any(|e| e.name() == ext.name()) {
-            eprintln!("[webatom] extension '{}' already registered, skipping", ext.name());
+            tracing::warn!("[webatom] extension '{}' already registered, skipping", ext.name());
             return;
         }
         self.extensions.push(Box::new(ext));

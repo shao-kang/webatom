@@ -4,6 +4,8 @@ use js_runtime::JsRuntime;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    tracing_subscriber::fmt::init();
+
     let path = std::env::args().nth(1).unwrap_or_else(|| "./tests/fixtures/entry.js".to_string());
 
     let abs_path = Path::new(&path)

@@ -7,32 +7,43 @@ pub struct ConsoleModule;
 
 impl ModuleDef for ConsoleModule {
     fn declare(decl: &Declarations) -> Result<()> {
-        decl.declare("print")?;
-        decl.declare("eprint")?;
+        decl.declare("info")?;
+        decl.declare("log")?;
+        decl.declare("warn")?;
+        decl.declare("error")?;
 
         
         Ok(())
     }
 
     fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
-        exports.export("print", Function::new(ctx.clone(), |s: String| {
-                println!("{}", s);
+        exports.export("info", Function::new(ctx.clone(), |s: String| {
+                tracing::info!(kind = "js", "{}", s);
                 Ok::<(), rquickjs::Error>(())
             })?)?;
-        exports.export("eprint", Function::new(ctx.clone(), |s: String| {
-                eprintln!("{}", s);
-                Ok::<(), rquickjs::Error>(())
-            })?)?;
+        exports.export("log", Function::new(ctx.clone(), |s: String| {
+            tracing::info!(kind = "js", "{}", s);
+            Ok::<(), rquickjs::Error>(())
+        })?)?;
+        exports.export("warn", Function::new(ctx.clone(), |s: String| {
+            tracing::warn!(kind = "js", "{}", s);
+            Ok::<(), rquickjs::Error>(())
+        })?)?;
+        exports.export("error", Function::new(ctx.clone(), |s: String| {
+            tracing::error!(kind = "js", "{}", s);
+            Ok::<(), rquickjs::Error>(())
+        })?)?;
+       
         Ok(())
     }
 }
 const JS_SOURCE: &str = r#"
-            import {eprint, print} from "webatom_ext_native:console"
+            import {log, info, warn, error} from "webatom_ext_native:console"
             globalThis.console = {
-                log:   (...args) => print(args.map(String).join(' ')),
-                info:  (...args) => print(args.map(String).join(' ')),
-                warn:  (...args) => eprint('[WARN] ' + args.map(String).join(' ')),
-                error: (...args) => eprint('[ERROR] ' + args.map(String).join(' ')),
+                log:   (...args) => log(args.map(String).join(' ')),
+                info:  (...args) => info(args.map(String).join(' ')),
+                warn:  (...args) => warn('[WARN] ' + args.map(String).join(' ')),
+                error: (...args) => error('[ERROR] ' + args.map(String).join(' ')),
             };
             "#;
 

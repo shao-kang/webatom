@@ -1,6 +1,7 @@
 use js_runtime::JsRuntime;
 
 async fn build() -> JsRuntime {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     JsRuntime::builder().build().await.unwrap()
 }
 
