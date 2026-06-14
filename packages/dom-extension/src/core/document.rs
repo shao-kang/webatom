@@ -186,6 +186,17 @@ impl Document {
         }
     }
 
+    pub fn has_attribute(&self, id: usize, name: &str) -> bool {
+        self.nodes.get(id).map(|n| n.data.has_attr(name)).unwrap_or(false)
+    }
+
+    pub fn attributes_list(&self, id: usize) -> Vec<(String, String)> {
+        self.nodes.get(id)
+            .and_then(|n| n.data.attrs())
+            .map(|attrs| attrs.iter().map(|a| (a.name.local.to_string(), a.value.clone())).collect())
+            .unwrap_or_default()
+    }
+
     pub fn remove_node(&mut self, id: usize) {
         self.nodes.try_remove(id);
     }

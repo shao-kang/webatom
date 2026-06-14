@@ -185,9 +185,40 @@ impl DocumentHandle {
         Ok(self.inner.borrow().doc.node_value(node.borrow().id))
     }
 
-    pub fn set_node_value(&self, node: Class<'_, NodeHandle>, value: String) -> Result<()> {
-        self.inner.borrow_mut().doc.set_node_value(node.borrow().id, &value);
+    pub fn set_node_value(&self, node: Class<'_, NodeHandle>, value: Option<String>) -> Result<()> {
+        self.inner.borrow_mut().doc.set_node_value(node.borrow().id, value.as_deref().unwrap_or(""));
         Ok(())
+    }
+
+    pub fn has_attribute(&self, node: Class<'_, NodeHandle>, name: String) -> Result<bool> {
+        Ok(self.inner.borrow().doc.has_attribute(node.borrow().id, &name))
+    }
+
+    pub fn attributes(&self, node: Class<'_, NodeHandle>) -> Result<Vec<Vec<String>>> {
+        let list = self.inner.borrow().doc.attributes_list(node.borrow().id);
+        Ok(list.into_iter().map(|(k, v)| vec![k, v]).collect())
+    }
+
+    pub fn replace_child(
+        &self,
+        parent: Class<'_, NodeHandle>,
+        new_node: Class<'_, NodeHandle>,
+        old_node: Class<'_, NodeHandle>,
+    ) -> Result<()> {
+        let parent_id = parent.borrow().id;
+        let new_id = new_node.borrow().id;
+        let old_id = old_node.borrow().id;
+        let mut inner = self.inner.borrow_mut();
+        inner.doc.insert_before(parent_id, new_id, old_id);
+        inner.doc.remove_child(parent_id, old_id);
+        Ok(())
+    }
+
+    pub fn create_document_fragment<'js>(&self, _ctx: Ctx<'js>) -> Result<Value<'js>> {
+        Err(rquickjs::Error::new_loading_message(
+            "dom",
+            "createDocumentFragment not yet implemented",
+        ))
     }
 
     pub fn get_attribute(

@@ -536,6 +536,7 @@ dependencies = [
  "rquickjs",
  "slab",
  "webatom-js-runtime",
+ "webatom-js-runtime-macro",
 ]
 
 [[package]]
