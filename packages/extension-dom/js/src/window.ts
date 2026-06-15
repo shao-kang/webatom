@@ -114,6 +114,8 @@ export const window = new Proxy(windowDefs, {
   },
   set(target, key, value) {
     target[key as string] = value;
+    // 同步写回 globalThis，让裸变量访问也能拿到最新值
+    (globalThis as Record<string | symbol, unknown>)[key] = value;
     return true;
   },
   has(target, key) {
@@ -121,4 +123,16 @@ export const window = new Proxy(windowDefs, {
   },
 });
 
-(globalThis as Record<string, unknown>).window = window;
+// 把 windowDefs 的每个 key 以 getter/setter 代理到 globalThis
+// 好处：直接写 `document` / `location` 等均通过 window Proxy 读写，行为与浏览器一致
+const _g = globalThis as Record<string | symbol, unknown>;
+for (const key of Object.keys(windowDefs)) {
+  if (key in _g) continue;          // 不覆盖已有的（console、Promise 等）
+  Object.defineProperty(_g, key, {
+    get() { return window[key]; },
+    set(v) { window[key] = v; },
+    configurable: true,
+    enumerable: false,
+  });
+}
+_g.window = window;

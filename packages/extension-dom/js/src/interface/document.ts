@@ -3,7 +3,7 @@
 import {
   Node,
   wrapHandleWith,
-  registerNodeType,
+  // registerNodeType,
 } from './node.js';
 
 import { DocumentHandle, NodeHandle } from './native';
@@ -14,6 +14,7 @@ import {DocumentContext} from './document-context.js'
 export class Document extends Node {
   
     _ctx: DocumentContext
+    text = 'xxx'
 
     constructor() {
         super()
@@ -33,18 +34,34 @@ export class Document extends Node {
     return this._wrap(this._docCtx.documentElement());
   }
 
+  #createElementWithHandle(tagName: string, handle: NodeHandle ) {
+    const node =  new Node(handle,);
+    this._ctx._handleNodeMap.set(handle, node)
+    return node
+
+  }
+
   // ── Node creation ────────────────────────────────────────────────────────
 
   createElement(tagName: string): Node {
-    return wrapHandleWith(this._docCtx, this._docCtx.createElement(tagName))!;
+    const handle = this._docCtx.createElement(tagName)
+    return this.#createElementWithHandle(tagName, handle)!;
   }
+  tagName(node: Node): string {
+    console.log('tagNameNode', node)
+    console.log('tagNameNode', node._handle!)
+    return this._docCtx.tagName(node._handle!)!
+  }
+  // nodeType(node: Node):string {
+  //   return this._docCtx.nodeType(node._handle!)
+  // }
 
   createTextNode(data: string): Node {
-    return wrapHandleWith(this._docCtx, this._docCtx.createTextNode(data))!;
+    return this.#createElementWithHandle('text', this._docCtx.createTextNode(data))!;
   }
 
   createComment(data: string): Node {
-    return wrapHandleWith(this._docCtx, this._docCtx.createComment(data))!;
+    return this.#createElementWithHandle('comment', this._docCtx.createComment(data))!;
   }
 
   // ── Query ────────────────────────────────────────────────────────────────
@@ -68,6 +85,6 @@ export class Document extends Node {
 //   }
 }
 
-registerNodeType(Node.DOCUMENT_NODE, () => {
-  throw new DOMException('Document nodes must be constructed directly', 'NotSupportedError');
-});
+// registerNodeType(Node.DOCUMENT_NODE, () => {
+//   throw new DOMException('Document nodes must be constructed directly', 'NotSupportedError');
+// });

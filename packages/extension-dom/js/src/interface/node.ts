@@ -5,13 +5,8 @@ export { NodeHandle } from './native';
 import type { NodeHandle } from './native';
 import type { DocumentContext } from './document-context';
 
-// Registry: nodeType number → factory function
-type NodeFactory = (ctx: DocumentContext, handle: NodeHandle) => Node;
-const nodeRegistry = new Map<number, NodeFactory>();
 
-export function registerNodeType(nodeType: number, factory: NodeFactory): void {
-  nodeRegistry.set(nodeType, factory);
-}
+
 
 // Wrap a NodeHandle into the correct Node subclass, reusing existing instances.
 export function wrapHandleWith(ctx: DocumentContext, handle: NodeHandle | null): Node | null {
@@ -71,7 +66,7 @@ class Node extends EventTarget {
   // _docCtx?: DocumentContext;
   get _docCtx(): DocumentContext {
     // @ts-expect-error yuji
-    return document.__docCtx
+    return document._docCtx
   }
 
   constructor( handle?: NodeHandle) {
@@ -114,10 +109,20 @@ class Node extends EventTarget {
     return this._docCtx.nodeType(h) === Node.ELEMENT_NODE ? this._wrap(h) : null;
   }
 
-  get firstChild(): Node | null      { return this._wrap(this._docCtx.firstChild(this._handle)); }
-  get lastChild(): Node | null       { return this._wrap(this._docCtx.lastChild(this._handle)); }
-  get nextSibling(): Node | null     { return this._wrap(this._docCtx.nextSibling(this._handle)); }
-  get previousSibling(): Node | null { return this._wrap(this._docCtx.previousSibling(this._handle)); }
+  get firstChild(): Node | null      { 
+    console.log('firstChild', this._handle, this._docCtx)
+    const node = this._docCtx.firstChild(this._handle!)
+    console.log('firstChild end')
+    return node 
+  }
+  get lastChild(): Node | null       { 
+    return this._docCtx.lastChild(this._handle!); 
+  }
+  get nextSibling(): Node | null     { 
+    return this._docCtx.nextSibling(this._handle!); }
+  get previousSibling(): Node | null { 
+    return this._docCtx.previousSibling(this._handle!); 
+  }
 
   // ── Child list ───────────────────────────────────────────────────────────
 

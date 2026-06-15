@@ -12,8 +12,8 @@ name = "js-runtime"
 path = "src/main.rs"
 
 [dependencies]
-rquickjs = { version = "0.9", features = ["full", "futures"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
+rquickjs = { workspace = true}
+tokio = { workspace = true }
 tracing = {workspace = true}
 tracing-subscriber = { workspace = true } 
 webatom-js-runtime-macro = { workspace = true }

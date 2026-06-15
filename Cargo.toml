@@ -12,6 +12,7 @@ markup5ever = "0.11"
 html5ever   = "0.26"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] } 
-rquickjs    = { version = "0.9", features = ["full"] }
+rquickjs    = { version = "0.12", features = ["futures", "loader"] }
+tokio       = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
 webatom-js-runtime = { path = "packages/js-runtime" }
 webatom-js-runtime-macro = { path = "packages/js-runtime-macro" }

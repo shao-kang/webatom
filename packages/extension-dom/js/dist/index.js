@@ -69,10 +69,6 @@ var DOMEventTarget = class {
 };
 //#endregion
 //#region src/interface/node.ts
-const nodeRegistry = /* @__PURE__ */ new Map();
-function registerNodeType(nodeType, factory) {
-	nodeRegistry.set(nodeType, factory);
-}
 function wrapHandleWith(ctx, handle) {
 	if (!handle) return null;
 	const existing = ctx._handleNodeMap.get(handle);
@@ -149,7 +145,7 @@ var Node = class Node extends DOMEventTarget {
 		this.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = POSITION_CONSTANTS.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
 	}
 	get _docCtx() {
-		return document.__docCtx;
+		return document._docCtx;
 	}
 	constructor(handle) {
 		super();
@@ -167,16 +163,19 @@ var Node = class Node extends DOMEventTarget {
 		return this._docCtx.nodeType(h) === Node.ELEMENT_NODE ? this._wrap(h) : null;
 	}
 	get firstChild() {
-		return this._wrap(this._docCtx.firstChild(this._handle));
+		console.log("firstChild", this._handle, this._docCtx);
+		const node = this._docCtx.firstChild(this._handle);
+		console.log("firstChild end");
+		return node;
 	}
 	get lastChild() {
-		return this._wrap(this._docCtx.lastChild(this._handle));
+		return this._docCtx.lastChild(this._handle);
 	}
 	get nextSibling() {
-		return this._wrap(this._docCtx.nextSibling(this._handle));
+		return this._docCtx.nextSibling(this._handle);
 	}
 	get previousSibling() {
-		return this._wrap(this._docCtx.previousSibling(this._handle));
+		return this._docCtx.previousSibling(this._handle);
 	}
 	get childNodes() {
 		const result = [];
@@ -357,7 +356,9 @@ var DocumentContext = class {
 		return handle ? this.getNode(handle) : null;
 	}
 	firstChild(node) {
+		console.log("contextstart");
 		const handle = this._docHandle.firstChild(node);
+		console.log("context", handle);
 		return handle ? this.getNode(handle) : null;
 	}
 	lastChild(node) {
@@ -420,6 +421,7 @@ var DocumentContext = class {
 var Document = class extends Node {
 	constructor() {
 		super();
+		this.text = "xxx";
 		this._ctx = new DocumentContext();
 	}
 	get _docCtx() {
@@ -431,19 +433,27 @@ var Document = class extends Node {
 	get documentElement() {
 		return this._wrap(this._docCtx.documentElement());
 	}
+	#createElementWithHandle(tagName, handle) {
+		const node = new Node(handle);
+		this._ctx._handleNodeMap.set(handle, node);
+		return node;
+	}
 	createElement(tagName) {
-		return wrapHandleWith(this._docCtx, this._docCtx.createElement(tagName));
+		const handle = this._docCtx.createElement(tagName);
+		return this.#createElementWithHandle(tagName, handle);
+	}
+	tagName(node) {
+		console.log("tagNameNode", node);
+		console.log("tagNameNode", node._handle);
+		return this._docCtx.tagName(node._handle);
 	}
 	createTextNode(data) {
-		return wrapHandleWith(this._docCtx, this._docCtx.createTextNode(data));
+		return this.#createElementWithHandle("text", this._docCtx.createTextNode(data));
 	}
 	createComment(data) {
-		return wrapHandleWith(this._docCtx, this._docCtx.createComment(data));
+		return this.#createElementWithHandle("comment", this._docCtx.createComment(data));
 	}
 };
-registerNodeType(Node.DOCUMENT_NODE, () => {
-	throw new DOMException("Document nodes must be constructed directly", "NotSupportedError");
-});
 //#endregion
 //#region src/window.ts
 const windowDefs = {
@@ -543,12 +553,27 @@ const window = new Proxy(windowDefs, {
 	},
 	set(target, key, value) {
 		target[key] = value;
+		globalThis[key] = value;
 		return true;
 	},
 	has(target, key) {
 		return key in target || key in globalThis;
 	}
 });
-globalThis.window = window;
+const _g = globalThis;
+for (const key of Object.keys(windowDefs)) {
+	if (key in _g) continue;
+	Object.defineProperty(_g, key, {
+		get() {
+			return window[key];
+		},
+		set(v) {
+			window[key] = v;
+		},
+		configurable: true,
+		enumerable: false
+	});
+}
+_g.window = window;
 //#endregion
 export { window };

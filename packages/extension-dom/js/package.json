@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "rolldown -c",
+    "build:watch": "rolldown -c -w",
     "test": "vitest run"
   },
   "devDependencies": {

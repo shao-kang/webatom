@@ -8,5 +8,15 @@ slab        = { workspace = true }
 markup5ever = { workspace = true }
 html5ever   = { workspace = true }
 rquickjs    = { workspace = true }
+tokio = { workspace = true }
 webatom-js-runtime = { workspace = true }
 webatom-js-runtime-macro = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio              = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[test]]
+name = "dom"
+path = "test/dom.rs"

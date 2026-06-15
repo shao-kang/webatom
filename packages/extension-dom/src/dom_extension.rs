@@ -1,7 +1,7 @@
 use rquickjs::{module::{Declarations, Exports, ModuleDef}, Class, Ctx, Result};
 use js_runtime::Extension;
 use webatom_js_runtime_macro::extension_native_module;
-// use js_runtime::Extension::js_module_init;
+use webatom_js_runtime_macro::extension_js_module;
 
 use crate::bridge::{DocumentHandle, NodeHandle};
 
@@ -30,10 +30,10 @@ impl Extension for DomExtension {
         "dom"
     }
     extension_native_module!(DomModule);
-    // js_module_init!("");
+    extension_js_module! ( include_str!("../js/dist/index.js"));
 
-  
 
+ 
     // fn module_init<'js>(&self, ctx: &Ctx<'js>) -> Result<()> {
     //     rquickjs::Module::declare_def::<DomModule, _>(ctx.clone(), "webatom-native:dom")?.eval()?;
     //     Ok(())

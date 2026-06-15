@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use rquickjs::{Ctx, Error, Result};
-use rquickjs::loader::Resolver;
+use rquickjs::loader::{ImportAttributes, Resolver};
 
 use crate::extension::ExtensionModules;
 
@@ -17,7 +17,7 @@ impl EsmResolver {
 }
 
 impl Resolver for EsmResolver {
-    fn resolve<'js>(&mut self, ctx: &Ctx<'js>, base: &str, name: &str) -> Result<String> {
+    fn resolve<'js>(&mut self, ctx: &Ctx<'js>, base: &str, name: &str, _attr: Option<ImportAttributes<'js>>) -> Result<String> {
         if let Some(modules) = ctx.userdata::<ExtensionModules>() {
             if modules.contains(name) {
                 return Ok(name.to_string());
@@ -35,7 +35,7 @@ impl Resolver for EsmResolver {
             Ok(name.to_string())
         } else {
             match self.import_map.get(name).cloned() {
-                Some(mapped) => self.resolve(ctx, base, &mapped),
+                Some(mapped) => self.resolve(ctx, base, &mapped, None),
                 None => Err(Error::new_resolving_message(
                     base,
                     name,

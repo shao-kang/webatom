@@ -56,30 +56,34 @@ impl DocumentHandle {
         Self::new()
     }
 
+    #[qjs(rename = "createElement")]
     pub fn create_element<'js>(&self, ctx: Ctx<'js>, tag: String) -> Result<Value<'js>> {
         let id = self.inner.borrow_mut().doc.create_element(&tag);
         self.get_or_create(ctx, id)
     }
 
+    #[qjs(rename = "createTextNode")]
     pub fn create_text_node<'js>(&self, ctx: Ctx<'js>, content: String) -> Result<Value<'js>> {
         let id = self.inner.borrow_mut().doc.create_text_node(&content);
         self.get_or_create(ctx, id)
     }
 
+    #[qjs(rename = "createComment")]
     pub fn create_comment<'js>(&self, ctx: Ctx<'js>, content: String) -> Result<Value<'js>> {
         let id = self.inner.borrow_mut().doc.create_comment(&content);
         self.get_or_create(ctx, id)
     }
 
+    #[qjs(rename = "documentNode")]
     pub fn document_node<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         let id = self.inner.borrow().doc.root();
         self.get_or_create(ctx, id)
     }
 
+    #[qjs(rename = "documentElement")]
     pub fn document_element<'js>(&self, ctx: Ctx<'js>) -> Result<Option<Value<'js>>> {
         let root = self.inner.borrow().doc.root();
         let child_id = self.inner.borrow().doc.first_child(root).and_then(|first| {
-            // Walk siblings to find the first element child
             let inner = self.inner.borrow();
             let mut cur = Some(first);
             loop {
@@ -96,6 +100,7 @@ impl DocumentHandle {
         }
     }
 
+    #[qjs(rename = "appendChild")]
     pub fn append_child(
         &self,
         parent: Class<'_, NodeHandle>,
@@ -107,6 +112,7 @@ impl DocumentHandle {
         Ok(())
     }
 
+    #[qjs(rename = "removeChild")]
     pub fn remove_child(
         &self,
         parent: Class<'_, NodeHandle>,
@@ -119,6 +125,7 @@ impl DocumentHandle {
         Ok(())
     }
 
+    #[qjs(rename = "insertBefore")]
     pub fn insert_before(
         &self,
         parent: Class<'_, NodeHandle>,
@@ -133,6 +140,7 @@ impl DocumentHandle {
         Ok(())
     }
 
+    #[qjs(rename = "parentNode")]
     pub fn parent_node<'js>(
         &self,
         ctx: Ctx<'js>,
@@ -145,6 +153,7 @@ impl DocumentHandle {
         }
     }
 
+    #[qjs(rename = "firstChild")]
     pub fn first_child<'js>(
         &self,
         ctx: Ctx<'js>,
@@ -157,6 +166,7 @@ impl DocumentHandle {
         }
     }
 
+    #[qjs(rename = "lastChild")]
     pub fn last_child<'js>(
         &self,
         ctx: Ctx<'js>,
@@ -169,6 +179,7 @@ impl DocumentHandle {
         }
     }
 
+    #[qjs(rename = "nextSibling")]
     pub fn next_sibling<'js>(
         &self,
         ctx: Ctx<'js>,
@@ -181,6 +192,7 @@ impl DocumentHandle {
         }
     }
 
+    #[qjs(rename = "previousSibling")]
     pub fn previous_sibling<'js>(
         &self,
         ctx: Ctx<'js>,
@@ -193,23 +205,28 @@ impl DocumentHandle {
         }
     }
 
+    #[qjs(rename = "nodeType")]
     pub fn node_type(&self, node: Class<'_, NodeHandle>) -> Result<u16> {
         Ok(self.inner.borrow().doc.node_type(node.borrow().id).unwrap_or(0))
     }
 
+    #[qjs(rename = "tagName")]
     pub fn tag_name(&self, node: Class<'_, NodeHandle>) -> Result<Option<String>> {
         Ok(self.inner.borrow().doc.tag_name(node.borrow().id))
     }
 
+    #[qjs(rename = "nodeValue")]
     pub fn node_value(&self, node: Class<'_, NodeHandle>) -> Result<Option<String>> {
         Ok(self.inner.borrow().doc.node_value(node.borrow().id))
     }
 
+    #[qjs(rename = "setNodeValue")]
     pub fn set_node_value(&self, node: Class<'_, NodeHandle>, value: Option<String>) -> Result<()> {
         self.inner.borrow_mut().doc.set_node_value(node.borrow().id, value.as_deref().unwrap_or(""));
         Ok(())
     }
 
+    #[qjs(rename = "hasAttribute")]
     pub fn has_attribute(&self, node: Class<'_, NodeHandle>, name: String) -> Result<bool> {
         Ok(self.inner.borrow().doc.has_attribute(node.borrow().id, &name))
     }
@@ -219,6 +236,7 @@ impl DocumentHandle {
         Ok(list.into_iter().map(|(k, v)| vec![k, v]).collect())
     }
 
+    #[qjs(rename = "replaceChild")]
     pub fn replace_child(
         &self,
         parent: Class<'_, NodeHandle>,
@@ -234,6 +252,7 @@ impl DocumentHandle {
         Ok(())
     }
 
+    #[qjs(rename = "createDocumentFragment")]
     pub fn create_document_fragment<'js>(&self, _ctx: Ctx<'js>) -> Result<Value<'js>> {
         Err(rquickjs::Error::new_loading_message(
             "dom",
@@ -241,6 +260,7 @@ impl DocumentHandle {
         ))
     }
 
+    #[qjs(rename = "getAttribute")]
     pub fn get_attribute(
         &self,
         node: Class<'_, NodeHandle>,
@@ -249,6 +269,7 @@ impl DocumentHandle {
         Ok(self.inner.borrow().doc.get_attribute(node.borrow().id, &name))
     }
 
+    #[qjs(rename = "setAttribute")]
     pub fn set_attribute(
         &self,
         node: Class<'_, NodeHandle>,
@@ -259,6 +280,7 @@ impl DocumentHandle {
         Ok(())
     }
 
+    #[qjs(rename = "removeAttribute")]
     pub fn remove_attribute(&self, node: Class<'_, NodeHandle>, name: String) -> Result<()> {
         self.inner.borrow_mut().doc.remove_attribute(node.borrow().id, &name);
         Ok(())

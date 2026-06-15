@@ -1,4 +1,5 @@
 import { DocumentHandle, NodeHandle } from './native';
+import { Node } from './node.js';
 
 export class DocumentContext {
   readonly _docHandle: DocumentHandle;
@@ -40,7 +41,9 @@ export class DocumentContext {
   }
 
   firstChild(node: NodeHandle): Node | null {
+    console.log('contextstart')
     const handle = this._docHandle.firstChild(node);
+    console.log('context', handle)
     return handle ? this.getNode(handle) : null;
   }
 
