@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "packages/js-runtime",
-    "packages/dom-extension", 
     "packages/js-runtime-macro",
+    "packages/extension-dom",
 ]
 resolver = "3"
 

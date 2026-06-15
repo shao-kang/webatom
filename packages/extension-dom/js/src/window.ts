@@ -1,8 +1,8 @@
-import { document } from './document.js';
-import { Event } from './event_target.js';
+import { Document } from './interface/document';
+// import { Event } from './interface/event_target';
 
 // ── Location ──────────────────────────────────────────────────────────────
-
+const document = new Document()
 interface ILocation {
   href: string;
   hostname: string;
@@ -59,7 +59,7 @@ const screen = {
 
 // ── Window object ─────────────────────────────────────────────────────────
 
-export const window = {
+const windowDefs: Record<string, unknown> = {
   document,
   location,
   navigator,
@@ -86,7 +86,6 @@ export const window = {
 
   // Scroll stubs
   scrollTo(_x?: number | ScrollToOptions, _y?: number): void {},
-  scrollBy(_x?: number | ScrollByOptions, _y?: number): void {},
   scroll(_x?: number | ScrollToOptions, _y?: number): void   {},
 
   // Style
@@ -105,9 +104,21 @@ export const window = {
   prompt(_message?: string, _default?: string): string | null { return null; },
 
   queueMicrotask(fn: () => void): void { Promise.resolve().then(fn); },
-
-  // Self-reference (set below to avoid circular reference at declaration)
-  window: null as unknown,
 };
 
-window.window = window;
+export const window = new Proxy(windowDefs, {
+  get(target, key) {
+    if (key === 'window') return window;
+    if (key in target) return target[key as string];
+    return (globalThis as Record<string | symbol, unknown>)[key];
+  },
+  set(target, key, value) {
+    target[key as string] = value;
+    return true;
+  },
+  has(target, key) {
+    return key in target || key in globalThis;
+  },
+});
+
+(globalThis as Record<string, unknown>).window = window;

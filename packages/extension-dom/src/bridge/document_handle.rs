@@ -71,9 +71,29 @@ impl DocumentHandle {
         self.get_or_create(ctx, id)
     }
 
-    pub fn document_element<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
+    pub fn document_node<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         let id = self.inner.borrow().doc.root();
         self.get_or_create(ctx, id)
+    }
+
+    pub fn document_element<'js>(&self, ctx: Ctx<'js>) -> Result<Option<Value<'js>>> {
+        let root = self.inner.borrow().doc.root();
+        let child_id = self.inner.borrow().doc.first_child(root).and_then(|first| {
+            // Walk siblings to find the first element child
+            let inner = self.inner.borrow();
+            let mut cur = Some(first);
+            loop {
+                match cur {
+                    Some(id) if inner.doc.node_type(id) == Some(1) => return Some(id),
+                    Some(id) => cur = inner.doc.next_sibling(id),
+                    None => return None,
+                }
+            }
+        });
+        match child_id {
+            Some(id) => Ok(Some(self.get_or_create(ctx, id)?)),
+            None => Ok(None),
+        }
     }
 
     pub fn append_child(

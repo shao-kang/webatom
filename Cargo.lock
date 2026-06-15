@@ -528,18 +528,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quickweb-core"
-version = "0.1.0"
-dependencies = [
- "html5ever",
- "markup5ever",
- "rquickjs",
- "slab",
- "webatom-js-runtime",
- "webatom-js-runtime-macro",
-]
-
-[[package]]
 name = "quote"
 version = "0.6.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1040,6 +1028,18 @@ dependencies = [
 [[package]]
 name = "webatom-js-runtime-macro"
 version = "0.1.0"
+
+[[package]]
+name = "webatom_extension_dom"
+version = "0.1.0"
+dependencies = [
+ "html5ever",
+ "markup5ever",
+ "rquickjs",
+ "slab",
+ "webatom-js-runtime",
+ "webatom-js-runtime-macro",
+]
 
 [[package]]
 name = "winapi"

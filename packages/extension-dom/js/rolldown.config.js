@@ -2,7 +2,10 @@
 import { defineConfig } from 'rolldown';
 
 export default defineConfig({
-  input: 'src/index.ts',
+  input: 'src/window.ts',
+  external: [
+    /^webatom_ext_native:/
+  ],
   output: {
     file: './dist/index.js',
     format: 'es',   //
