@@ -1,4 +1,6 @@
 import { Document } from './interface/document';
+import { Node } from './interface/node';
+
 // import { Event } from './interface/event_target';
 
 // ── Location ──────────────────────────────────────────────────────────────
@@ -61,6 +63,7 @@ const screen = {
 
 const windowDefs: Record<string, unknown> = {
   document,
+  Node: Node,
   location,
   navigator,
   history,

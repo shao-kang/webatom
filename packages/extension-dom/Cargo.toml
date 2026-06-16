@@ -19,4 +19,4 @@ tracing-subscriber = { workspace = true }
 
 [[test]]
 name = "dom"
-path = "test/dom.rs"
+path = "test/dom/dom.rs"

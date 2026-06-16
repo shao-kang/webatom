@@ -1,8 +1,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use js_runtime::event_loop::EventLoopHandle;
 use rquickjs::{Class, Ctx, Persistent, Result, Value};
 use rquickjs::class::Trace;
+use tokio::sync::oneshot;
 
 use super::document_inner::DocumentInner;
 use super::node_handle::NodeHandle;
@@ -12,6 +14,8 @@ use super::node_handle::NodeHandle;
 pub struct DocumentHandle {
     #[qjs(skip_trace)]
     pub(crate) inner: Rc<RefCell<DocumentInner>>,
+    #[qjs(skip_trace)]
+    pub tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 unsafe impl<'js> rquickjs::JsLifetime<'js> for DocumentHandle {
@@ -20,7 +24,7 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for DocumentHandle {
 
 impl DocumentHandle {
     pub fn new() -> Self {
-        Self { inner: Rc::new(RefCell::new(DocumentInner::new())) }
+        Self { inner: Rc::new(RefCell::new(DocumentInner::new())), tx: None }
     }
 
     fn get_or_create<'js>(&self, ctx: Ctx<'js>, id: usize) -> Result<Value<'js>> {
@@ -45,12 +49,34 @@ impl DocumentHandle {
         Ok(val)
     }
 }
+impl Drop for DocumentHandle {
+    fn drop(&mut self) {
 
+        if let Some(sender) = self.tx.take() {
+            // 现在 sender 拥有了所有权，可以安全调用 send()
+            sender.send(()).unwrap(); 
+        }
+    }
+}
 #[rquickjs::methods]
 impl DocumentHandle {
     #[qjs(constructor)]
-    pub fn js_new() -> Self {
-        Self::new()
+    pub fn js_new<'js>(_ctx: Ctx<'js>) -> Self {
+        let mut _self = Self::new();
+
+        let _event_handle = _ctx.userdata::<EventLoopHandle>()
+            .expect("EventLoopHandle userdata not registered")
+            .clone();
+        let guard = _event_handle.active_handles.acquire();
+        let (tx, rx) = oneshot::channel();
+        _self.tx = Some(tx);
+        _ctx.spawn(async move {
+            let _guard = guard;
+            tokio::select! {
+                _ = rx => {}
+            }
+        });
+        _self
     }
 
     #[qjs(rename = "createElement")]

@@ -1,0 +1,16 @@
+{
+  "name": "blitz-script-js",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rolldown -c",
+    "build:watch": "rolldown -c -w",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "rolldown": "^1.0.2",
+    "tsc": "^2.0.4",
+    "vitest": "^3.0.0"
+  }
+}
