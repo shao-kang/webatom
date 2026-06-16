@@ -61,8 +61,14 @@ impl Drop for DocumentHandle {
 #[rquickjs::methods]
 impl DocumentHandle {
     #[qjs(constructor)]
-    pub fn js_new<'js>(_ctx: Ctx<'js>) -> Self {
-        let mut _self = Self::new();
+    pub fn js_new<'js>(_ctx: Ctx<'js>, html: Option<String>) -> Self {
+        let mut _self = match html {
+            Some(h) => Self {
+                inner: Rc::new(RefCell::new(DocumentInner::new_html(&h))),
+                tx: None,
+            },
+            None => Self::new(),
+        };
 
         let _event_handle = _ctx.userdata::<EventLoopHandle>()
             .expect("EventLoopHandle userdata not registered")

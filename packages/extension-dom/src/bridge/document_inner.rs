@@ -17,4 +17,11 @@ impl DocumentInner {
             node_handles: HashMap::new(),
         }
     }
+    pub fn new_html(html: &str) -> Self {
+         Self {
+            doc: Document::parse_html(html),
+            node_handles: HashMap::new(),
+        }
+
+    }
 }

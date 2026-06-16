@@ -7,7 +7,7 @@ pub enum NodeKind {
     Text     = 3,
     Comment  = 8,
     Document = 9,
-    Fragment = 11,
+    DocumentFragment = 11,
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ impl NodeData {
             NodeData::Element(_)  => NodeKind::Element,
             NodeData::Text(_)     => NodeKind::Text,
             NodeData::Comment {..} => NodeKind::Comment,
-            NodeData::Fragment(_) => NodeKind::Fragment,
+            NodeData::Fragment(_) => NodeKind::DocumentFragment,
         }
     }
 }

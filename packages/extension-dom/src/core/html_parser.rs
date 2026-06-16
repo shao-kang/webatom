@@ -2,23 +2,31 @@ use std::borrow::Cow;
 
 use html5ever::{
     parse_document,
+    parse_fragment as html5_parse_fragment,
     tendril::{StrTendril, TendrilSink},
     tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink},
     Attribute as H5Attr, QualName,
 };
-use markup5ever::{namespace_url, ns, ExpandedName, LocalName};
+use markup5ever::{namespace_url, ns, ExpandedName, LocalName, Namespace};
 
 use super::node::NodeData;
 use super::Document;
 
 pub struct HtmlSink {
-    doc: Document,
+    pub doc: Document,
+}
+impl HtmlSink {
+    pub fn fragment(document: Document) -> Self {
+        Self { doc: document }
+    }
+
 }
 
 impl Default for HtmlSink {
     fn default() -> Self {
         Self { doc: Document::new() }
     }
+    
 }
 
 impl TreeSink for HtmlSink {
@@ -44,7 +52,15 @@ impl TreeSink for HtmlSink {
     fn elem_name<'a>(&'a self, target: &'a usize) -> ExpandedName<'a> {
         match self.doc.get(*target).map(|n| &n.data) {
             Some(NodeData::Element(e)) => e.name.expanded(),
-            _ => ExpandedName { ns: &ns!(), local: &LocalName::from("unknown") },
+            _ => {
+                use std::sync::OnceLock;
+                static NS: OnceLock<markup5ever::Namespace> = OnceLock::new();
+                static LOCAL: OnceLock<LocalName> = OnceLock::new();
+                ExpandedName {
+                    ns: NS.get_or_init(|| ns!()),
+                    local: LOCAL.get_or_init(|| LocalName::from("unknown")),
+                }
+            }
         }
     }
 
@@ -52,6 +68,19 @@ impl TreeSink for HtmlSink {
         let id = self.doc.create_element(&name.local);
         for attr in attrs {
             self.doc.set_attribute(id, &attr.name.local, &attr.value);
+        }
+        let tag = name.local.to_string();
+        match tag.as_str() {
+            "html" => {
+                self.doc.document_element = Some(id);
+            }
+            "head" => {
+                self.doc.head = Some(id);
+            }
+            "body" => {
+                self.doc.body = Some(id);
+            }
+            _ => {}
         }
         id
     }
@@ -145,3 +174,34 @@ pub fn parse_html(html: &str) -> Document {
         .read_from(&mut html.as_bytes())
         .unwrap()
 }
+
+/// 在已有 `doc` 上解析 `html` 片段（以 `context_tag` 为上下文），
+/// 返回 (文档根节点id, 本次新增的节点id列表)
+pub fn parse_fragment(doc: &mut Document, html: &str, context_tag: &str) -> (usize, Vec<usize>) {
+    let existing: std::collections::HashSet<usize> = doc.node_ids().into_iter().collect();
+    let root = doc.root();
+
+    let sink = HtmlSink::fragment(std::mem::take(doc));
+    let context_name = QualName::new(
+        None,
+        Namespace::from("http://www.w3.org/1999/xhtml"),
+        LocalName::from(context_tag),
+    );
+    *doc = html5_parse_fragment(sink, Default::default(), context_name, vec![])
+        .from_utf8()
+        .read_from(&mut html.as_bytes())
+        .unwrap();
+
+    let new_ids: Vec<usize> = doc.node_ids()
+        .into_iter()
+        .filter(|id| !existing.contains(id))
+        .collect();
+
+    (root, new_ids)
+}
+
+pub fn parse_fragment_body(doc: &mut Document, html: &str) -> (usize, Vec<usize>) {
+    parse_fragment(doc, html, "body")
+}
+
+

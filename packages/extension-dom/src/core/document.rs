@@ -1,12 +1,18 @@
 use slab::Slab;
 use markup5ever::{LocalName, Namespace, QualName};
 
+use super::parse_html;
+
 use super::{Attributes, ElementData, Node, TextNodeData};
 use super::node::NodeData;
 
 pub struct Document {
     nodes: Slab<Node>,
     root: usize,
+    pub document_element: Option<usize>,
+    pub body: Option<usize>,
+    pub head: Option<usize>,
+
 }
 
 impl Document {
@@ -21,9 +27,11 @@ impl Document {
             data: NodeData::Document,
             has_handle: false,
         });
-        Self { nodes, root }
+        Self { nodes, root, body: None, head: None, document_element: None }
     }
-
+    pub fn parse_html(html: &str) -> Self {
+        parse_html(html)
+    }
     pub fn root(&self) -> usize {
         self.root
     }
@@ -199,6 +207,10 @@ impl Document {
 
     pub fn remove_node(&mut self, id: usize) {
         self.nodes.try_remove(id);
+    }
+
+    pub fn node_ids(&self) -> Vec<usize> {
+        self.nodes.iter().map(|(id, _)| id).collect()
     }
 }
 

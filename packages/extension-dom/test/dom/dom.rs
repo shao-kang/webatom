@@ -31,15 +31,15 @@ async fn setup_dom_succeeds() {
 ///               └── #text "段落内容"
 #[tokio::test]
 async fn build_dom_tree_and_print() {
-    let rt = build().await;
+    let mut rt = build().await;
 
-    let tree = rt
-        .eval::<String>(include_str!("./dom.js"))
+    let rt = rt
+        .eval_module("entry", include_str!("./dist/index.js"))
         .await
         .unwrap();
         drop_runtime(rt).await;
 
-    println!("\n--- DOM Tree ---\n{tree}");
+    // println!("\n--- DOM Tree ---\n{tree}");
 
     // assert!(tree.contains("#document"),                 "missing #document root");
     // assert!(tree.contains("<HTML>"),                    "missing <HTML>");

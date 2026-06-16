@@ -1,4 +1,4 @@
-(function () {
+const test =  () => {
     try {
         const html  = document.createElement('html');
         const head  = document.createElement('head');
@@ -46,4 +46,6 @@
     } catch (e) {
         return 'ERRORs: ' + (e && e.message ? e.message : String(e));
     }
-})()
+}
+
+test()

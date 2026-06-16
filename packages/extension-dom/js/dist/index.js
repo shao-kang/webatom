@@ -472,7 +472,7 @@ var Document = class extends Node {
 //#endregion
 //#region src/window.ts
 const windowDefs = {
-	document: new Document(),
+	Document,
 	Node,
 	location: {
 		href: "",
