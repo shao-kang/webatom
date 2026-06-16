@@ -67,7 +67,10 @@ impl DocumentHandle {
                 inner: Rc::new(RefCell::new(DocumentInner::new_html(&h))),
                 tx: None,
             },
-            None => Self::new(),
+            None => Self {
+                inner: Rc::new(RefCell::new(DocumentInner::new_html(""))),
+                tx: None,
+            },
         };
 
         let _event_handle = _ctx.userdata::<EventLoopHandle>()

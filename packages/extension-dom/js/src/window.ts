@@ -4,7 +4,7 @@ import { Node } from './interface/node';
 // import { Event } from './interface/event_target';
 
 // ── Location ──────────────────────────────────────────────────────────────
-// const document = new Document('')
+const document = new Document()
 interface ILocation {
   href: string;
   hostname: string;
@@ -63,7 +63,7 @@ const screen = {
 
 const windowDefs: Record<string, unknown> = {
   Document,
-  // document,
+  document,
   Node,
   location,
   navigator,

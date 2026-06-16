@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rquickjs::{ Ctx, Result};
 
 use crate::event_loop::{ActiveHandles, EventLoopHandle};
@@ -13,6 +15,8 @@ pub trait Extension {
     fn module_name(&self) -> String {
         format!("webatom_ext_js:{}", self.name())
     }
+    fn configure(&self, _args: &std::collections::HashMap<String, String>){}
+    fn get_config(&self, _key: String){}
 
 
     fn event_loop_handle<'js>(&self, ctx: &Ctx<'js>) -> EventLoopHandle {
@@ -32,4 +36,10 @@ pub trait Extension {
     }
 
 
+}
+
+
+#[allow(dead_code)]
+struct ExtensionArgs {
+    args: HashMap<String, String>,
 }

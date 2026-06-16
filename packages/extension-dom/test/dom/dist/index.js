@@ -1,5 +1,5 @@
 //#region dom/index.ts
-const test = () => {
+var test = () => {
 	try {
 		const html = document.createElement("html");
 		const head = document.createElement("head");

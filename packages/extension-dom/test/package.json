@@ -4,13 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "rolldown -c",
-    "build:watch": "rolldown -c -w",
+    "build": "vite build",
+    "build:watch": "vite build --watch",
     "test": "vitest run"
   },
   "devDependencies": {
     "rolldown": "^1.0.2",
     "tsc": "^2.0.4",
+    "vite": "^8.0.16",
     "vitest": "^3.0.0"
   }
 }

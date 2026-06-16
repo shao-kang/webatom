@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="">
+  <head>
+    <meta charset="UTF-8" />
+    <link
+      rel="shortcut icon"
+      href="https://p3.ssl.qhimg.com/dmt/64_64_/t01982b0cd588b0611a.png"
+      type="image/x-icon"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>360图片-网罗天下美图</title>
+  </head>
+  <body>
+    <script type="text/javascript">
+      // 跳转到提示页面
+      // 该页面用于提示用户浏览器版本过低，无法使用本应用
+      // 该页面会在浏览器版本过低时被加载
+      function jumpToPrompt() {
+        window.location.href = '%VITE_APP_VUE_ROUTER_BASE_URL%/prompt.html';
+      }
+      var isIE = /*@cc_on!@*/false || !!window.ActiveXObject || "ActiveXObject" in window;
+      if (isIE) {
+        // 如果是 IE 浏览器，跳转到提示页面
+        jumpToPrompt();
+      }
+      try {
+        // Vue 3 必需特性检测
+        if (
+          typeof Proxy === 'undefined' ||           // 响应式依赖 Proxy
+          typeof Reflect === 'undefined' ||         // Vue 3 响应式用 Reflect
+          typeof Promise === 'undefined' ||         // 异步依赖 Promise
+          typeof Symbol === 'undefined' ||          // Vue 内部类型用 Symbol
+          typeof BigInt === 'undefined'             // vue compiler 有时依赖 bigint（仅限 dev）
+        ) {
+          throw new Error('Unsupported browser');
+        }
+        new Function('import("")')                  // ES Modules
+      } catch (e) {
+        // 如果不满足，跳转提示页
+        jumpToPrompt();
+      }
+    </script>
+    <noscript>
+      你的浏览器不支持javascript!
+    </noscript>
+    <div id="so-pay"></div>
+    <div id="app"></div>
+    <script>
+      window.Tools = {}
+    </script>
+    <script src="https://s0.qhimg.com/lib/jquery/191.js" data-name="jquery"></script>
+    <script type="module" src="/src/main.ts"></script>
+    <!-- AB实验 -->
+    <script type="text/plain" id="abtest-version">%VITE_APP_ABTEST_VERSION%</script>
+   
+  </body>
+</html>

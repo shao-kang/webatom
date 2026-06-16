@@ -1,0 +1,3 @@
+[submodule "ext/blitz"]
+	path = ext/blitz
+	url = https://github.com/DioxusLabs/blitz.git

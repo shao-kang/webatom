@@ -473,6 +473,7 @@ var Document = class extends Node {
 //#region src/window.ts
 const windowDefs = {
 	Document,
+	document: new Document(),
 	Node,
 	location: {
 		href: "",
