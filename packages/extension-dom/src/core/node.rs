@@ -7,6 +7,7 @@ pub enum NodeKind {
     Text     = 3,
     Comment  = 8,
     Document = 9,
+    Fragment = 11,
 }
 
 #[derive(Debug, Clone)]
@@ -15,6 +16,7 @@ pub enum NodeData {
     Element(ElementData),
     Text(TextNodeData),
     Comment { contents: String },
+    Fragment(ElementData)
 }
 
 impl NodeData {
@@ -55,6 +57,7 @@ impl NodeData {
             NodeData::Element(_)  => NodeKind::Element,
             NodeData::Text(_)     => NodeKind::Text,
             NodeData::Comment {..} => NodeKind::Comment,
+            NodeData::Fragment(_) => NodeKind::Fragment,
         }
     }
 }

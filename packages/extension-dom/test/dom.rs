@@ -9,7 +9,9 @@ async fn build() -> JsRuntime {
         .await
         .unwrap()
 }
-
+async fn drop_runtime(rt: JsRuntime) {
+   let _result = rt.eval::<()>("globalThis.document = undefined").await;
+}
 #[tokio::test]
 async fn setup_dom_succeeds() {
     build().await;
@@ -46,26 +48,26 @@ async fn build_dom_tree_and_print() {
         
 
         // document.appendChild(root,  html);
-        // document.appendChild(html,  head);
-        // document.appendChild(head,  title);
-        // document.appendChild(title, document.createTextNode('Hello webAtom'));
-        // document.appendChild(html,  body);
-        // document.appendChild(body,  h1);
-        // document.appendChild(h1,    document.createTextNode('标题'));
-        // document.appendChild(body,  p);
-        // document.appendChild(p,     document.createTextNode('段落内容'));
+        html.appendChild(head);
+        head.appendChild(title);
+        title.appendChild(document.createTextNode('Hello webAtom'));
+        html.appendChild(body);
+        body.appendChild(h1);
+        h1.appendChild(document.createTextNode('标题'));
+        body.appendChild(p);
+        p.appendChild(document.createTextNode('段落内容'));
          
 
         function serialize(node, depth) {
             const indent = '  '.repeat(depth);
-            console.log('dddd',node, depth)
+            console.log('dddd11',node, depth)
             const tagName   = document.tagName(node);
-            console.log(tagName)
-            let line = '';
-            if      (tagName === 9) line = indent + '#document';
-            else if (tagName === 1) line = indent + '<' + document.tagName(node) + '>';
-            else if (tagName === 3) line = indent + '#text "' + document.nodeValue(node) + '"';
-            else if (tagName === 8) line = indent + '<!-- ' + document.nodeValue(node) + ' -->';
+            console.log('tagName', tagName)
+            let line = `${indent} <${tagName} >`;
+            // if      (tagName === 9) line = indent + '#document';
+            // else if (tagName === 1) line = indent + '<' + document.tagName(node) + '>';
+            // else if (tagName === 3) line = indent + '#text "' + document.nodeValue(node) + '"';
+            // else if (tagName === 8) line = indent + '<!-- ' + document.nodeValue(node) + ' -->';
             let out = line + '\n';
             let child = node.firstChild;
             console.log('child', child)
@@ -74,7 +76,7 @@ async fn build_dom_tree_and_print() {
                 out  += serialize(child, depth + 1);
                 child = child.nextSibling;
             }
-            console.log(out)
+            console.log('ddd', out)
             return out;
         }
         // return 'ddd'
@@ -87,6 +89,7 @@ async fn build_dom_tree_and_print() {
         )
         .await
         .unwrap();
+        drop_runtime(rt).await;
 
     println!("\n--- DOM Tree ---\n{tree}");
 

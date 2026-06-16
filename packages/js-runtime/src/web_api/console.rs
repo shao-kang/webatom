@@ -22,32 +22,32 @@ impl ModuleDef for ConsoleModule {
                 // 获取 JS 调用栈
                 // let js_stack = get_js_stack_trace(&ctx);
                 
-                let _span = tracing::info_span!("js_console", kind = "js", message = %s).entered();
-                tracing::info!(target: "web_console", kind = "js", message = %s);
+                let _span = tracing::info_span!("js", kind = "js").entered();
+                tracing::info!(target: "web_console_info", kind = "js", message = %s);
                 Ok::<(), rquickjs::Error>(())
             })?)?;
         exports.export("log", Function::new(ctx.clone(), move |_ctx: Ctx<'js>, s: String| {
             // 获取 JS 调用栈
             // let js_stack = get_js_stack_trace(&ctx);
             
-            let _span = tracing::info_span!("js_console", kind = "js", message = %s).entered();
-            tracing::info!(target: "web_console", kind = "js", message = %s);
+            let _span = tracing::info_span!("js", kind = "js").entered();
+            tracing::info!(target: "web_console_log", kind = "js", message = %s);
             Ok::<(), rquickjs::Error>(())
         })?)?;
         exports.export("warn", Function::new(ctx.clone(), move |ctx: Ctx<'js>, s: String| {
             // 获取 JS 调用栈
             let js_stack = get_js_stack_trace(&ctx);
             
-            let _span = tracing::warn_span!("js_console", kind = "js", js_stack = %js_stack, message = %s).entered();
-            tracing::warn!(target: "web_console", kind = "js", message = %s, js_stack = %js_stack);
+            let _span = tracing::warn_span!("js", kind = "js", js_stack = %js_stack).entered();
+            tracing::warn!(target: "web_console_warn", kind = "js", message = %s, js_stack = %js_stack);
             Ok::<(), rquickjs::Error>(())
         })?)?;
         exports.export("error", Function::new(ctx.clone(), move |ctx: Ctx<'js>, s: String| {
             // 获取 JS 调用栈
             let js_stack = get_js_stack_trace(&ctx);
             
-            let _span = tracing::error_span!("js_console", kind = "js", js_stack = %js_stack, message = %s).entered();
-            tracing::error!(target: "web_console", kind = "js", message = %s, js_stack = %js_stack);
+            let _span = tracing::error_span!("js", kind = "js", js_stack = %js_stack).entered();
+            tracing::error!(target: "web_console_error", kind = "js", message = %s, js_stack = %js_stack);
             Ok::<(), rquickjs::Error>(())
         })?)?;
        

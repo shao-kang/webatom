@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rquickjs::{class::Trace, Class, Ctx, Persistent, Result, Value};
+use rquickjs::{Class, Ctx, Persistent, Result, Value};
+use rquickjs::class::Trace;
 
 use super::document_inner::DocumentInner;
 use super::node_handle::NodeHandle;
@@ -24,28 +25,24 @@ impl DocumentHandle {
 
     fn get_or_create<'js>(&self, ctx: Ctx<'js>, id: usize) -> Result<Value<'js>> {
         if let Some(p) = self.inner.borrow().node_handles.get(&id).cloned() {
-            return p.restore(&ctx);
+            let weak_ref_val = p.restore(&ctx)?;
+            let deref_fn: rquickjs::Function = ctx.eval("(wr) => wr.deref()")?;
+            let handle: Value<'js> = deref_fn.call((weak_ref_val,))?;
+            if !handle.is_undefined() {
+                return Ok(handle);
+            }
+            self.inner.borrow_mut().node_handles.remove(&id);
+            
         }
         if let Some(node) = self.inner.borrow_mut().doc.get_mut(id) {
             node.has_handle = true;
         }
-        let handle = NodeHandle {
-            id,
-            inner: Rc::downgrade(&self.inner),
-        };
+        let handle = NodeHandle { id, inner: Rc::downgrade(&self.inner) };
         let val: Value<'js> = Class::instance(ctx.clone(), handle)?.into_value();
-        self.inner.borrow_mut().node_handles.insert(id, Persistent::save(&ctx, val.clone()));
+        let make_weak: rquickjs::Function = ctx.eval("(t) => new WeakRef(t)")?;
+        let weak_ref_val: Value<'js> = make_weak.call((val.clone(),))?;
+        self.inner.borrow_mut().node_handles.insert(id, Persistent::save(&ctx, weak_ref_val));
         Ok(val)
-    }
-
-    fn remove_subtree(&self, id: usize) {
-        let children = self.inner.borrow().doc.get(id)
-            .map(|n| n.children.clone())
-            .unwrap_or_default();
-        for child in children {
-            self.remove_subtree(child);
-        }
-        self.inner.borrow_mut().node_handles.remove(&id);
     }
 }
 
@@ -121,7 +118,6 @@ impl DocumentHandle {
         let parent_id = parent.borrow().id;
         let child_id = child.borrow().id;
         self.inner.borrow_mut().doc.remove_child(parent_id, child_id);
-        self.remove_subtree(child_id);
         Ok(())
     }
 
