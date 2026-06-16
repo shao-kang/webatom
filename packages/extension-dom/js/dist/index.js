@@ -154,6 +154,21 @@ var Node = class Node extends DOMEventTarget {
 	_wrap(h) {
 		return wrapHandleWith(this._docCtx, h);
 	}
+	get nodeType() {
+		return this._docCtx.nodeType(this._handle);
+	}
+	get nodeName() {
+		switch (this.nodeType) {
+			case Node.ELEMENT_NODE: return this._docCtx.tagName(this._handle)?.toUpperCase() ?? "";
+			case Node.TEXT_NODE: return "#text";
+			case Node.CDATA_SECTION_NODE: return "#cdata-section";
+			case Node.PROCESSING_INSTRUCTION_NODE: return this._docCtx.nodeValue(this._handle) ?? "";
+			case Node.COMMENT_NODE: return "#comment";
+			case Node.DOCUMENT_NODE: return "#document";
+			case Node.DOCUMENT_FRAGMENT_NODE: return "#document-fragment";
+			default: return "";
+		}
+	}
 	get parentNode() {
 		return this._wrap(this._docCtx.parentNode(this._handle));
 	}
