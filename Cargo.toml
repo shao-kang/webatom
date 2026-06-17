@@ -2,7 +2,7 @@
 members = [
     "packages/js-runtime",
     "packages/js-runtime-macro",
-    "packages/extension-dom",
+    "packages/extension-dom", "packages/blitz_bridge",
 ]
 resolver = "3"
 

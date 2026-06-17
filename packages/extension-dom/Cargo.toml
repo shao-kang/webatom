@@ -10,8 +10,8 @@ html5ever   = { workspace = true }
 rquickjs    = { workspace = true, features = ["macro", "classes"]  }
 tokio = { workspace = true }
 webatom-js-runtime = { workspace = true }
-webatom-js-runtime-macro = { workspace = true }
 tracing = { workspace = true }
+blitz = "0.2.1"
 
 [dev-dependencies]
 tokio              = { workspace = true }

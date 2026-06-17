@@ -2,7 +2,7 @@ mod attributes;
 mod document;
 mod element;
 mod html_parser;
-mod node;
+pub mod node;
 
 pub use attributes::{Attribute, Attributes};
 pub use document::Document;
