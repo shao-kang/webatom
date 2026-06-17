@@ -8,9 +8,9 @@ pub enum DomOp {
     // ── 树结构变更
     AppendChild  { parent: usize, child: usize },
     InsertBefore { parent: usize, child: usize, before: usize },
-    /// 只从树中摘除，节点仍存在（对应 Node.removeChild）
+    /// 只从树中摘除，节点仍存在
     RemoveChild  { parent: usize, child: usize },
-    /// JS 侧彻底释放节点（无任何 JS 引用）
+    /// 节点从 JS 侧彻底释放
     DropNode     { id: usize },
 
     // ── 属性变更
@@ -18,6 +18,6 @@ pub enum DomOp {
     SetAttributes   { node: usize, attrs: Vec<(String, String)> },
     RemoveAttribute { node: usize, name: String },
 
-    // ── 文本内容变更（CharacterData.data）
+    // ── 文本内容变更
     SetTextContent { node: usize, content: String },
 }

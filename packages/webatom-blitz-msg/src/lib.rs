@@ -4,7 +4,7 @@ pub mod msg;
 pub mod patch;
 pub mod snapshot;
 
-pub use channel::{create_channels, BlitzSide, JsSide};
+pub use channel::{BlitzSide, JsSide, create_channels};
 pub use event::BlitzEvent;
 pub use msg::DomMsg;
 pub use patch::DomOp;

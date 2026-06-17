@@ -2,7 +2,9 @@
 members = [
     "packages/js-runtime",
     "packages/js-runtime-macro",
-    "packages/extension-dom", "packages/blitz_bridge",
+    "packages/extension-dom",
+    "packages/webatom-blitz",
+    "packages/webatom-blitz-msg",
 ]
 resolver = "3"
 
@@ -15,4 +17,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rquickjs    = { version = "0.12", features = ["futures", "loader", "macro", "classes"] }
 tokio       = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
 webatom-js-runtime = { path = "packages/js-runtime" }
+webatom-blitz-msg = { path = "packages/webatom-blitz-msg" }
 webatom-js-runtime-macro = { path = "packages/js-runtime-macro" }
