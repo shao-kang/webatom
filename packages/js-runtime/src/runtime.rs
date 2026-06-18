@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, Module};
 
 use crate::event_loop::EventLoop;
-use crate::extension::{Extension, ExtensionRegistry};
+use crate::extension::{Extension, ExtensionRegistry, };
 use crate::module::setup_module_system;
 use crate::web_api::{ConsoleExtension, };
 
@@ -113,5 +113,5 @@ pub struct RuntimeState {
     // resource_table: ResourceTable,
     // permission: PermissionState,
     // module_cache: ModuleCache,
-    extensions: ExtensionState,
+    // extensions: ExtensionState,
 }

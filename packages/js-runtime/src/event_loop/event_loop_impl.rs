@@ -74,7 +74,7 @@ impl EventLoop {
         Ok(())
     }
 
-    async fn flush_after_microtask(
+    pub async fn flush_after_microtask(
         handle: &EventLoopHandle,
         context: &AsyncContext,
     ) -> rquickjs::Result<()> {
@@ -88,7 +88,8 @@ impl EventLoop {
 
     pub async fn run(mut self, context: &AsyncContext) -> rquickjs::Result<()> {
         if self.handle.active_handles.count() == 0 {
-            return Ok(());
+            // Tasks may have been queued before run() (e.g. during eval_module).
+            return Self::flush_after_microtask(&self.handle, context).await;
         }
         loop {
             tokio::select! {
@@ -100,6 +101,8 @@ impl EventLoop {
                     Self::flush_raf(&self.handle, context, frame.timestamp_ms).await?;
                 }
                 _ = self.handle.active_handles.wait_idle() => {
+                    // Flush tasks queued in the last macro-task before we exit.
+                    Self::flush_after_microtask(&self.handle, context).await?;
                     break;
                 }
             }

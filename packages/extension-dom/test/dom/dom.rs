@@ -39,19 +39,14 @@ async fn setup_dom_succeeds() {
 async fn build_dom_tree_and_print() {
     let mut _rt = build().await;
 
-    let result = _rt
-        .eval_module("entry", include_str!("./dist/index.js"))
-        .await;
-    match result {
-        Ok(_rt) => {
-            drop_runtime(_rt).await;
-        }
+    let rt = match _rt.eval_module("entry", include_str!("./dist/index.js")).await {
+        Ok(rt) => rt,
         Err(e) => {
             eprintln!("JS Execution Error: {:?}", e);
-            // 如果可能，尝试获取更详细的 JS 堆栈或错误消息
             panic!("Failed to load module: {:?}", e);
         }
-    }
+    };
+    rt.run().await.expect("event loop failed");
         
 
     // println!("\n--- DOM Tree ---\n{tree}");

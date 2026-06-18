@@ -140,8 +140,9 @@ impl DocumentHandle {
     }
 
     #[qjs(rename = "appendChild")]
-    pub fn append_child(
+    pub fn append_child<'js>(
         &self,
+        _ctx: Ctx<'js>,
 
         parent: Class<'_, NodeHandle>,
         child: Class<'_, NodeHandle>,
@@ -150,15 +151,15 @@ impl DocumentHandle {
         let parent_id = parent.borrow().id;
         let child_id = child.borrow().id;
         self.inner.borrow_mut().doc.append_child(parent_id, child_id);
-        // _ctx.userdata::<EventLoopHandle>()
-        //     .expect("EventLoopHandle userdata not registered")
-        //     .after_microtask_queue
-        //     .lock()
-        //     .unwrap()
-        //     .push_back(AfterMicrotaskTask::from_rust(|_ctx| {
-        //         println!("AfterMicrotaskTask");
-        //         Ok(())
-        //     }));
+        _ctx.userdata::<EventLoopHandle>()
+            .expect("EventLoopHandle userdata not registered")
+            .after_microtask_queue
+            .lock()
+            .unwrap()
+            .push_back(AfterMicrotaskTask::from_rust(|_ctx| {
+                tracing::info!("after_microtask  append_child");
+                Ok(())
+            }));
         Ok(())
     }
 
