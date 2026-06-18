@@ -1,7 +1,3 @@
-
-// import html from './index.html?raw'
-
-// const document = new Document()
 const test =  () => {
     try {
         const html  = document.createElement('html');

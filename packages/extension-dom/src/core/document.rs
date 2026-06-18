@@ -12,6 +12,7 @@ pub struct Document {
     pub document_element: Option<usize>,
     pub body: Option<usize>,
     pub head: Option<usize>,
+    
 
 }
 

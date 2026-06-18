@@ -3,11 +3,17 @@ use webatom_extension_dom::DomExtension;
 
 async fn build() -> JsRuntime {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    JsRuntime::builder()
-        .extension(DomExtension)
+    match JsRuntime::builder()
+        .register_extension(DomExtension::new())
         .build()
-        .await
-        .unwrap()
+        .await {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("Failed to build runtime: {:?}", e);
+                // 尝试获取更底层的错误信息
+                panic!("Runtime build failed: {:?}", e);
+            }
+        }
 }
 async fn drop_runtime(rt: JsRuntime) {
    let _result = rt.eval::<()>("globalThis.document = undefined").await;
@@ -31,13 +37,22 @@ async fn setup_dom_succeeds() {
 ///               └── #text "段落内容"
 #[tokio::test]
 async fn build_dom_tree_and_print() {
-    let mut rt = build().await;
+    let mut _rt = build().await;
 
-    let rt = rt
+    let result = _rt
         .eval_module("entry", include_str!("./dist/index.js"))
-        .await
-        .unwrap();
-        drop_runtime(rt).await;
+        .await;
+    match result {
+        Ok(_rt) => {
+            drop_runtime(_rt).await;
+        }
+        Err(e) => {
+            eprintln!("JS Execution Error: {:?}", e);
+            // 如果可能，尝试获取更详细的 JS 堆栈或错误消息
+            panic!("Failed to load module: {:?}", e);
+        }
+    }
+        
 
     // println!("\n--- DOM Tree ---\n{tree}");
 

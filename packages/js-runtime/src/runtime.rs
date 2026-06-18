@@ -38,7 +38,7 @@ impl JsRuntimeBuilder {
         self
     }
 
-    pub fn extension(mut self, ext: impl Extension + 'static) -> Self {
+    pub fn register_extension(mut self, ext: impl Extension + 'static) -> Self {
         self.registry.register(ext);
         self
     }
@@ -57,7 +57,7 @@ impl JsRuntimeBuilder {
 
         let handle = event_loop.handle();
         let extension_modules = self.registry.extension_modules.clone();
-        context.with(|ctx| {
+         context.with(|ctx| {
             ctx.store_userdata(handle)?;
             ctx.store_userdata(extension_modules)?;
             self.registry.apply(&ctx)
@@ -105,4 +105,13 @@ impl JsRuntime {
         let Self { context, event_loop } = self;
         event_loop.run(&context).await
     }
+}
+
+
+
+pub struct RuntimeState { 
+    // resource_table: ResourceTable,
+    // permission: PermissionState,
+    // module_cache: ModuleCache,
+    extensions: ExtensionState,
 }

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use rquickjs::{Ctx, Result};
+use crate::anymap::AnyMap;
 
 use super::Extension;
 
@@ -27,6 +28,7 @@ impl ExtensionModules {
 }
 
 pub struct ExtensionRegistry {
+    // 模块注册名称
     pub extension_modules: ExtensionModules,
     extensions: Vec<Box<dyn Extension>>,
     applied: HashSet<String>,
@@ -61,7 +63,14 @@ impl ExtensionRegistry {
             ext.js_module_init(ctx)
                 .map_err(|e| rquickjs::Error::new_loading_message(ext.name(), e.to_string()))?;
             self.applied.insert(ext.name().to_string());
+            ext.init(ctx);
         }
         Ok(())
     }
+}
+
+
+#[allow(dead_code)]
+pub struct ExtensionState {
+    inner: AnyMap,
 }

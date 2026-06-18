@@ -1,3 +1,4 @@
+pub mod anymap;
 pub mod event_loop;
 pub mod extension;
 pub mod module;

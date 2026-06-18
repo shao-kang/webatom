@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use js_runtime::event_loop::EventLoopHandle;
+use js_runtime::event_loop::{EventLoopHandle, AfterMicrotaskTask};
 use rquickjs::{Class, Ctx, Persistent, Result, Value};
 use rquickjs::class::Trace;
 use tokio::sync::oneshot;
@@ -61,17 +61,24 @@ impl Drop for DocumentHandle {
 #[rquickjs::methods]
 impl DocumentHandle {
     #[qjs(constructor)]
-    pub fn js_new<'js>(_ctx: Ctx<'js>, html: Option<String>) -> Self {
-        let mut _self = match html {
-            Some(h) => Self {
-                inner: Rc::new(RefCell::new(DocumentInner::new_html(&h))),
-                tx: None,
-            },
-            None => Self {
+    pub fn js_new<'js>(_ctx: Ctx<'js>) -> Self {
+        tracing::info!("new handle document");
+        // println!("new handle document");
+        // let mut _self = match html {
+        //     Some(h) => Self {
+        //         inner: Rc::new(RefCell::new(DocumentInner::new_html(&h))),
+        //         tx: None,
+        //     },
+        //     None => Self {
+        //         inner: Rc::new(RefCell::new(DocumentInner::new_html(""))),
+        //         tx: None,
+        //     },
+        // };
+        let mut _self = Self {
                 inner: Rc::new(RefCell::new(DocumentInner::new_html(""))),
                 tx: None,
-            },
-        };
+            };
+
 
         let _event_handle = _ctx.userdata::<EventLoopHandle>()
             .expect("EventLoopHandle userdata not registered")
@@ -135,12 +142,23 @@ impl DocumentHandle {
     #[qjs(rename = "appendChild")]
     pub fn append_child(
         &self,
+
         parent: Class<'_, NodeHandle>,
         child: Class<'_, NodeHandle>,
     ) -> Result<()> {
+        tracing::info!("append_child");
         let parent_id = parent.borrow().id;
         let child_id = child.borrow().id;
         self.inner.borrow_mut().doc.append_child(parent_id, child_id);
+        // _ctx.userdata::<EventLoopHandle>()
+        //     .expect("EventLoopHandle userdata not registered")
+        //     .after_microtask_queue
+        //     .lock()
+        //     .unwrap()
+        //     .push_back(AfterMicrotaskTask::from_rust(|_ctx| {
+        //         println!("AfterMicrotaskTask");
+        //         Ok(())
+        //     }));
         Ok(())
     }
 
