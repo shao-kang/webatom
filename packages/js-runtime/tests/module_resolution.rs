@@ -13,8 +13,8 @@ async fn relative_import_resolves() {
     let source = std::fs::read_to_string(&entry).unwrap();
     let abs = entry.canonicalize().unwrap().to_string_lossy().into_owned();
 
-    let rt = JsRuntime::builder().build().await.unwrap();
-    let rt = rt.eval_module(&abs, source).await.unwrap();
+    let mut rt = JsRuntime::builder().build().await.unwrap();
+    rt.eval_module(&abs, source).await.unwrap();
 
     let sum: i32 = rt.eval("__sum").await.unwrap();
     let pi: f64 = rt.eval("__pi").await.unwrap();
@@ -24,7 +24,7 @@ async fn relative_import_resolves() {
 
 #[tokio::test]
 async fn bare_import_not_in_map_fails() {
-    let rt = JsRuntime::builder().build().await.unwrap();
+    let mut rt = JsRuntime::builder().build().await.unwrap();
     let result = rt.eval_module("test.js", "import 'react';").await;
     assert!(result.is_err());
 }
@@ -41,8 +41,8 @@ async fn import_map_redirects_bare_import() {
     let mut import_map = HashMap::new();
     import_map.insert("my-math".to_string(), math_abs);
 
-    let rt = JsRuntime::builder().import_map(import_map).build().await.unwrap();
-    let rt = rt.eval_module(
+    let mut rt = JsRuntime::builder().import_map(import_map).build().await.unwrap();
+    rt.eval_module(
         "test.js",
         "import { add } from 'my-math'; globalThis.__result = add(10, 5);",
     )

@@ -12,14 +12,14 @@ async fn setup_web_api_succeeds() {
 
 #[tokio::test]
 async fn console_object_is_available() {
-    let rt = build().await;
+    let mut rt = build().await;
     let result: bool = rt.eval("typeof globalThis.console === 'object'").await.unwrap();
     assert!(result);
 }
 
 #[tokio::test]
 async fn console_has_expected_methods() {
-    let rt = build().await;
+    let mut rt = build().await;
     let result: bool = rt
         .eval("['log','info','warn','error'].every(m => typeof console[m] === 'function')")
         .await
@@ -29,13 +29,13 @@ async fn console_has_expected_methods() {
 
 #[tokio::test]
 async fn console_log_does_not_panic() {
-    let rt = build().await;
+    let mut rt = build().await;
     rt.eval::<()>("console.log('hello', 42, true)").await.unwrap();
 }
 
 #[tokio::test]
 async fn console_warn_error_do_not_panic() {
-    let rt = build().await;
+    let mut rt = build().await;
     rt.eval::<()>("console.warn('warn msg'); console.error('error msg')")
         .await
         .unwrap();

@@ -6,7 +6,8 @@ edition = "2024"
 [lib]
 name = "js_runtime"
 path = "src/lib.rs"
-
+[tests]
+path = "tests"
 [[bin]]
 name = "js-runtime"
 path = "src/main.rs"

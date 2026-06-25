@@ -16,14 +16,11 @@ async fn main() {
     let source = std::fs::read_to_string(&abs_path)
         .unwrap_or_else(|e| panic!("cannot read {}: {}", abs_path_str, e));
 
-    JsRuntime::builder()
+    let mut runtime = JsRuntime::builder()
         .build()
         .await
-        .unwrap()
-        .eval_module(&abs_path_str, source)
-        .await
-        .unwrap()
-        .run()
-        .await
         .unwrap();
+
+    runtime.eval_module(&abs_path_str, source).await.unwrap();
+    runtime.run().await.unwrap();
 }

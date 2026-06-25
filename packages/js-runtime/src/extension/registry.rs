@@ -1,11 +1,14 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use rquickjs::{Ctx, Result};
-use crate::anymap::AnyMap;
+use rquickjs::{Ctx, Module, Result};
+
+use crate::event_loop::HostBridge;
 
 use super::Extension;
 
+/// Tracks which module specifiers were declared as native modules,
+/// so the resolver can recognise them without going to the filesystem.
 #[derive(Clone)]
 pub struct ExtensionModules(Arc<Mutex<HashSet<String>>>);
 
@@ -28,10 +31,8 @@ impl ExtensionModules {
 }
 
 pub struct ExtensionRegistry {
-    // 模块注册名称
     pub extension_modules: ExtensionModules,
     extensions: Vec<Box<dyn Extension>>,
-    applied: HashSet<String>,
 }
 
 impl ExtensionRegistry {
@@ -39,8 +40,15 @@ impl ExtensionRegistry {
         Self {
             extensions: Vec::new(),
             extension_modules: ExtensionModules::new(),
-            applied: HashSet::new(),
         }
+    }
+
+    pub fn register_boxed(&mut self, ext: Box<dyn Extension>) {
+        if self.extensions.iter().any(|e| e.name() == ext.name()) {
+            tracing::warn!("[webatom] extension '{}' already registered, skipping", ext.name());
+            return;
+        }
+        self.extensions.push(ext);
     }
 
     pub fn register(&mut self, ext: impl Extension + 'static) {
@@ -51,26 +59,28 @@ impl ExtensionRegistry {
         self.extensions.push(Box::new(ext));
     }
 
-    pub fn apply<'js>(&mut self, ctx: &Ctx<'js>) -> Result<()> {
+    /// Two-step apply:
+    /// Step A — `install` all extensions (registers native modules + userdata).
+    /// Step B — evaluate `js_glue` for each extension that has one.
+    pub fn apply(&self, ctx: &Ctx<'_>, host: &HostBridge) -> Result<()> {
+        // Step A
         for ext in &self.extensions {
-            if self.applied.contains(ext.name()) {
-                continue;
+            for &specifier in ext.native_module_specifiers() {
+                self.extension_modules.insert(specifier.to_string());
             }
-            self.extension_modules.insert(ext.native_module_name());
-            ext.native_module_init(ctx)
+            ext.install(ctx, host)
                 .map_err(|e| rquickjs::Error::new_loading_message(ext.name(), e.to_string()))?;
-            self.extension_modules.insert(ext.module_name());
-            ext.js_module_init(ctx)
-                .map_err(|e| rquickjs::Error::new_loading_message(ext.name(), e.to_string()))?;
-            self.applied.insert(ext.name().to_string());
-            ext.init(ctx);
+        }
+        // Step B
+        for ext in &self.extensions {
+            if let Some(glue) = ext.js_glue() {
+                let module_name = format!("<{}-glue>", ext.name());
+                Module::evaluate(ctx.clone(), module_name, glue)
+                    .map_err(|e| rquickjs::Error::new_loading_message(ext.name(), e.to_string()))?
+                    .finish::<()>()
+                    .map_err(|e| rquickjs::Error::new_loading_message(ext.name(), e.to_string()))?;
+            }
         }
         Ok(())
     }
-}
-
-
-#[allow(dead_code)]
-pub struct ExtensionState {
-    inner: AnyMap,
 }
