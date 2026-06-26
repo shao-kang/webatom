@@ -88,6 +88,13 @@ impl EventLoop {
             // parked.
             tokio::select! {
                 _ = self.runtime.drive() => {}
+                Some(task) = self.task_rx.recv() => {
+                    // A MacroTask (e.g. timer callback) arrived while drive() was
+                    // parked. Execute it immediately so its keepalive is released;
+                    // drain_events below will pick up any remaining tasks.
+                    self.process_event(task, ctx).await?;
+                    self.microtask_checkpoint(ctx).await?;
+                }
                 _ = self.handle.keepalive_count.wait_idle() => {
                     // Flush one last time before exiting.
                     self.drain_events(ctx).await?;

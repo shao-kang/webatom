@@ -5,7 +5,7 @@ use rquickjs::AsyncContext;
 use crate::event_loop::EventLoop;
 use crate::extension::{Extension, ExtensionRegistry};
 use crate::module::setup_module_system;
-use crate::web_api::{ConsoleExtension, MicrotaskExtension};
+use crate::web_api::{ConsoleExtension, FetchExtension, MicrotaskExtension, TimerExtension};
 
 use super::runtime::JsRuntime;
 
@@ -45,6 +45,9 @@ impl JsRuntimeBuilder {
         if self.with_defaults {
             registry.register(ConsoleExtension);
             registry.register(MicrotaskExtension);
+            registry.register(TimerExtension);
+            registry.register(FetchExtension);
+            registry.register(FetchExtension);
         }
         for ext in self.extensions {
             // Unbox and re-register; Extension is object-safe so we go through the trait.
