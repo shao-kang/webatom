@@ -5,16 +5,15 @@ use std::time::Duration;
 use rquickjs::{AsyncContext, AsyncRuntime};
 use tokio::sync::{mpsc, watch};
 
-use super::event::RuntimeEvent;
+use super::task::{MacroTask, RafTask};
 use super::handle::{EventLoopHandle, HostBridge, KeepAliveCount, RuntimeBridge, RuntimeIo, SchedulerBridge};
 use super::idle::{IdleQueue, IdleScheduler};
 use super::render_scheduler::{HeadlessRenderScheduler, RenderScheduler, VsyncSignal};
-use super::task::RafTask;
 
 pub struct EventLoop {
     pub(crate) host: HostBridge,
     runtime: AsyncRuntime,
-    event_rx: mpsc::Receiver<RuntimeEvent>,
+    task_rx: mpsc::Receiver<MacroTask>,
     vsync_rx: watch::Receiver<Option<VsyncSignal>>,
     raf_queue: Arc<Mutex<VecDeque<RafTask>>>,
     idle_queue: Arc<Mutex<IdleQueue>>,
@@ -27,7 +26,7 @@ pub struct EventLoop {
 
 impl EventLoop {
     pub fn new(runtime: AsyncRuntime) -> Self {
-        let (event_tx, event_rx) = mpsc::channel(64);
+        let (task_tx, task_rx) = mpsc::channel(64);
         let (vsync_tx, vsync_rx) = watch::channel(None);
         let vsync_tx = Arc::new(vsync_tx);
 
@@ -37,7 +36,7 @@ impl EventLoop {
 
         let host = HostBridge {
             runtime: RuntimeBridge { keepalive: keepalive.clone() },
-            io: RuntimeIo { event_tx: event_tx.clone() },
+            io: RuntimeIo { task_tx: task_tx.clone() },
             scheduler: SchedulerBridge {
                 raf: raf_queue.clone(),
                 idle: idle_queue.clone(),
@@ -46,14 +45,14 @@ impl EventLoop {
 
         let handle = EventLoopHandle {
             keepalive_count: keepalive,
-            event_tx,
+            task_tx,
             vsync_tx,
         };
 
         Self {
             host,
             runtime,
-            event_rx,
+            task_rx,
             vsync_rx,
             raf_queue,
             idle_queue,
@@ -144,12 +143,12 @@ impl EventLoop {
         .await
     }
 
-    /// Drain all pending RuntimeEvents from the channel without blocking.
+    /// Drain all pending macro-tasks from the channel without blocking.
     async fn drain_events(&mut self, ctx: &AsyncContext) -> rquickjs::Result<()> {
         loop {
-            match self.event_rx.try_recv() {
-                Ok(event) => {
-                    self.process_event(event, ctx).await?;
+            match self.task_rx.try_recv() {
+                Ok(task) => {
+                    self.process_event(task, ctx).await?;
                     self.microtask_checkpoint(ctx).await?;
                 }
                 Err(_) => break,
@@ -160,21 +159,10 @@ impl EventLoop {
 
     async fn process_event(
         &mut self,
-        event: RuntimeEvent,
+        task: MacroTask,
         ctx: &AsyncContext,
     ) -> rquickjs::Result<()> {
-        match event {
-            RuntimeEvent::Timer(timer) => {
-                ctx.with(|qctx| {
-                    let cb = timer.callback.restore(&qctx)?;
-                    let _ = cb.call::<_, rquickjs::Value>(());
-                    drop(timer.keepalive);
-                    Ok::<(), rquickjs::Error>(())
-                })
-                .await?;
-            }
-        }
-        Ok(())
+        ctx.with(move |qctx| task(qctx)).await
     }
 
     async fn process_vsync(
@@ -192,8 +180,7 @@ impl EventLoop {
     }
 
     fn should_exit(&self) -> bool {
-        // Exit when no extension holds a keepalive and the event channel is drained.
         self.handle.keepalive_count.count() <= 0
-            && self.event_rx.is_empty()
+            && self.task_rx.is_empty()
     }
 }

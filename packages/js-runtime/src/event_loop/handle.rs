@@ -6,8 +6,7 @@ use std::sync::{
 
 use tokio::sync::{Notify, mpsc, watch};
 
-use super::event::RuntimeEvent;
-use super::task::{IdleTask, RafTask};
+use super::task::{IdleTask, MacroTask, RafTask};
 use super::idle::IdleQueue;
 use super::render_scheduler::VsyncSignal;
 
@@ -104,11 +103,11 @@ pub struct RuntimeBridge {
 // RuntimeIo
 // ──────────────────────────────────────────────────────────────
 
-/// Cross-thread channel for posting events (timers, fetch callbacks, …)
+/// Cross-thread channel for posting macro-tasks (timer callbacks, fetch completions, …)
 /// back to the JS event loop.
 #[derive(Clone)]
 pub struct RuntimeIo {
-    pub event_tx: mpsc::Sender<RuntimeEvent>,
+    pub task_tx: mpsc::Sender<MacroTask>,
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -155,7 +154,7 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for HostBridge {
 #[derive(Clone)]
 pub struct EventLoopHandle {
     pub keepalive_count: KeepAliveCount,
-    pub event_tx: mpsc::Sender<RuntimeEvent>,
+    pub task_tx: mpsc::Sender<MacroTask>,
     pub vsync_tx: Arc<watch::Sender<Option<VsyncSignal>>>,
 }
 

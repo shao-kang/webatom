@@ -3,6 +3,12 @@ use std::time::Instant;
 use rquickjs::{Ctx, Function, Persistent, Result};
 
 // ──────────────────────────────────────────────────────────────
+// MacroTask — cross-thread task closure
+// ──────────────────────────────────────────────────────────────
+
+pub type MacroTask = Box<dyn for<'js> FnOnce(Ctx<'js>) -> Result<()> + Send + 'static>;
+
+// ──────────────────────────────────────────────────────────────
 // RAF task
 // ──────────────────────────────────────────────────────────────
 

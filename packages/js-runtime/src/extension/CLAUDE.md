@@ -29,7 +29,7 @@ Extension 按实现路径分为三层，语义不同，不应混用：
 |---|---|---|---|
 | **Layer 1: Global** | 纯同步 JS API | console、performance | 无 EventLoop 依赖，无 keepalive |
 | **Layer 2: Scheduler** | 任务投递到 EventLoop 队列 | rAF、idle | 推入 host queue，EventLoop 决定执行时机 |
-| **Layer 3: Bridge** | Rust 异步 + EventLoop 通知 | setTimeout、fetch、WebSocket | tokio::spawn + keepalive + event_tx |
+| **Layer 3: Bridge** | Rust 异步 + EventLoop 通知 | setTimeout、fetch、WebSocket | tokio::spawn + keepalive + task_tx |
 
 所有三层均通过 `HostBridge` 与 EventLoop 交互，差异仅在使用 HostBridge 的哪些字段。
 
@@ -67,10 +67,10 @@ impl SchedulerBridge {
     }
 }
 
-/// Layer 3 专用：发送 RuntimeEvent 到 EventLoop（bounded channel，async send）
+/// Layer 3 专用：发送 MacroTask 闭包到 EventLoop（bounded channel，async send）
 #[derive(Clone)]
 pub struct IoBridge {
-    pub event_tx: mpsc::Sender<RuntimeEvent>,
+    pub task_tx: mpsc::Sender<MacroTask>,
 }
 
 /// Layer 3 专用：Runtime 生命周期（keepalive acquire/drop）
@@ -184,10 +184,15 @@ let (id, cancel_rx) = registry.lock().register_bridge();
 tokio::spawn(async move {
     tokio::select! {
         _ = tokio::time::sleep(delay) => {
-            let event = RuntimeEvent::Timer(...);
+            let task: MacroTask = Box::new(move |ctx| {
+                let f = persistent.restore(&ctx)?;
+                let _ = f.call::<_, Value>(());
+                Ok(())
+                // keepalive 在此 drop
+            });
             tokio::select! {
-                _ = event_tx.send(event) => { registry2.lock().complete(id); }
-                _ = cancel_rx => {}
+                _ = task_tx.send(task) => { registry2.lock().complete(id); }
+                _ = cancel_rx => {}   // cancel 时 task（含 keepalive）drop，无泄漏
             }
         }
         _ = cancel_rx => {}
@@ -308,7 +313,7 @@ console.log('hello');
 
 ---
 
-### 模式 C：Bridge Module + JS Glue（tokio::spawn + keepalive + event_tx）
+### 模式 C：Bridge Module + JS Glue（tokio::spawn + keepalive + task_tx）
 
 适用：setTimeout、fetch、WebSocket（需要跨线程异步 + Web 兼容全局）
 
@@ -351,7 +356,7 @@ setTimeout(() => {}, 100);
 | `MicrotaskExtension` | B | `@webatom/queue-microtask` | `queueMicrotask` | 无（QJS job queue shim） | — |
 | `AnimationFrameExtension` | C | `@webatom/animation-frame` | `requestAnimationFrame` / `cancelAnimationFrame` | `host.scheduler` | `TaskRegistry` |
 | `IdleCallbackExtension` | C | `@webatom/idle-callback` | `requestIdleCallback` / `cancelIdleCallback` | `host.scheduler` | `TaskRegistry` |
-| `TimerExtension` | C | `@webatom/timer` | `setTimeout` / `clearTimeout` / `setInterval` / `clearInterval` | `host.runtime.keepalive` + `host.io.event_tx` | `TaskRegistry` |
+| `TimerExtension` | C | `@webatom/timer` | `setTimeout` / `clearTimeout` / `setInterval` / `clearInterval` | `host.runtime.keepalive` + `host.io.task_tx` | `TaskRegistry` |
 
 ---
 
@@ -562,7 +567,7 @@ globalThis.cancelIdleCallback = cancelIdleCallback;
 
 | 操作 | Extension 使用的入口 | 归属 |
 |---|---|---|
-| 发送 IO 完成事件 | `host.io.event_tx.send(event)` | HostBridge |
+| 发送宏任务 | `host.io.task_tx.send(task)` | HostBridge |
 | 阻止 Runtime 退出 | `host.runtime.keepalive.acquire()` | HostBridge |
 | 推入 JS 微任务 | `Promise::resolve().then(callback)`（QJS job queue） | QJS 内部，不经 HostBridge |
 | 推入 rAF 任务 | `host.scheduler.push_raf(task)` | HostBridge |
@@ -645,12 +650,12 @@ EventLoop (single-threaded owner)
   Queues
   ├── raf_queue        (VecDeque)
   ├── idle_queue       (VecDeque)
-  └── macrotask_queue  (RuntimeEvent channel)
+  └── macrotask_queue  (MacroTask channel)
     ▲
     │ push only（通过 method API，不暴露 Arc<Mutex<>>）
 HostBridge
   ├── scheduler.push_raf/push_idle()   ← Layer 2 唯一写入路径
-  └── io.event_tx.send()               ← Layer 3 唯一写入路径
+  └── io.task_tx.send()               ← Layer 3 唯一写入路径
     ▲
     │ install(&ctx, &host) 捕获
 Extension
@@ -676,7 +681,7 @@ Extension ──push──▶ HostBridge ──mutate──▶ Queues ──drai
 
 **Inv-3 Single Writer**：队列的 drain / pop / execute 仅由 EventLoop JS Thread 执行。Extension 只调用 `push_*()` 方法，不调用 `lock().pop_front()` 或类似操作。
 
-**Inv-4 Lifetime Coupling（Layer 3）**：keepalive 必须在 `tokio::spawn` 前 acquire，随 RuntimeEvent 一同投递或在 cancel 时 drop；不得在 EventLoop 处理完成后仍持有。
+**Inv-4 Lifetime Coupling（Layer 3）**：keepalive 必须在 `tokio::spawn` 前 acquire，随 `MacroTask` 闭包一同投递或在 cancel 时 drop；不得在 EventLoop 处理完成后仍持有。
 
 ```
 acquire_keepalive()
@@ -684,8 +689,8 @@ acquire_keepalive()
     ▼
 tokio::spawn(async {
     sleep / IO
-    ├── complete → emit RuntimeEvent { keepalive }  → EventLoop dispatch → drop keepalive
-    └── cancel  → drop keepalive（TaskToken drop → select! cancel 臂）
+    ├── complete → MacroTask { keepalive }  → task_tx.send → EventLoop execute → drop keepalive
+    └── cancel  → drop keepalive（cancel_rx 触发 → task drop）
 })
 ```
 
@@ -705,7 +710,7 @@ tokio::spawn(async {
 | TaskRegistry 统一 cancel | `cancel(id)` remove entry；Bridge: drop Sender → cancel_rx 关闭；Scheduler: is_active()=false → 执行时跳过 |
 | TaskRegistry ID 命名空间 | 每个 Extension 持有独立 registry；Timer / RAF / Idle ID 互不干扰（符合 Web 规范） |
 | 不持有 ctx 跨越 await | into_persistent() 保存 JS 值；dispatch 时 restore(&ctx) 恢复 |
-| event_tx 嵌套 select | Layer 3 send 必须嵌套 select，防止 channel 满时 cancel 被忽略 |
+| task_tx 嵌套 select | Layer 3 send 必须嵌套 select，防止 channel 满时 cancel 被忽略 |
 | HostBridge Arc 共享 | EventLoop 直接持有 queue Arc；HostBridge 持有相同 Arc clone；无锁竞争（JS Thread 单侧） |
 
 ---
@@ -723,7 +728,7 @@ tokio::spawn(async {
    queueMicrotask(A); Promise.resolve().then(B);
    → A 先（注册先，FIFO）→ B 后；符合 Web 规范微任务顺序
 
-④ setTimeout 基本功能（Layer 3，host.runtime.keepalive + host.io.event_tx）
+④ setTimeout 基本功能（Layer 3，host.runtime.keepalive + host.io.task_tx）
    setTimeout(fn, 100) → 100ms 后 fn 执行
 
 ⑤ clearTimeout 在 sleep 期间（TaskToken drop）
@@ -761,7 +766,7 @@ tokio::spawn(async {
 
 ⑭ Phase 1 Class 通过 userdata 访问 HostBridge
    WebSocketClass 实例构造时存 host；或 ctx.userdata::<HostBridge>()
-   → 方法内可 host.event_tx.send(ws_event)
+   → 方法内可 host.io.task_tx.send(MacroTask)
 ```
 
 ---
