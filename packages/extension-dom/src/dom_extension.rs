@@ -8,6 +8,7 @@ use rquickjs::{
 use webatom_blitz_msg::{msg::DomMsg, patch::DomOp, JsSide};
 
 use crate::bridge::{DocumentHandle, ImportMapState, NodeHandle};
+use crate::html_entry::HtmlEntry;
 
 // ── Native module ─────────────────────────────────────────────────────────────
 
@@ -42,16 +43,37 @@ impl ModuleDef for DomModule {
 #[derive(rquickjs::JsLifetime, Clone)]
 pub struct DomExtensionState {
     channel: Arc<JsSide>,
+    entry: Option<Arc<HtmlEntry>>,
 }
 
 impl DomExtensionState {
     pub fn new(channel: JsSide) -> Self {
-        Self { channel: Arc::new(channel) }
+        Self { channel: Arc::new(channel), entry: None }
+    }
+
+    pub fn with_entry(mut self, entry: Arc<HtmlEntry>) -> Self {
+        self.entry = Some(entry);
+        self
+    }
+
+    /// 入口页面的基础 URL（用于相对路径解析）
+    pub fn base_url(&self) -> Option<&str> {
+        self.entry.as_ref().map(|e| e.base_url.as_str())
+    }
+
+    /// 入口页面的原始 HTML 内容
+    pub fn html_content(&self) -> Option<&str> {
+        self.entry.as_ref().map(|e| e.content.as_str())
     }
 
     /// 将增量 patch 发送到 Blitz 渲染线程（fire & forget）
     pub(crate) fn send_patch(&self, ops: Vec<DomOp>) {
         let _ = self.channel.dom_tx.send(DomMsg::Patch(ops));
+    }
+
+    /// 发送首帧全量快照
+    pub(crate) fn send_full(&self, snapshot: webatom_blitz_msg::snapshot::DomSnapshot) {
+        let _ = self.channel.dom_tx.send(DomMsg::Full(snapshot));
     }
 }
 
@@ -92,6 +114,11 @@ impl Extension for DomExtension {
         ctx.store_userdata(host.clone())?;
         // ImportMapState：初始为空，<script type="importmap"> 解析后更新
         ctx.store_userdata(ImportMapState::new())?;
+
+        // HTML 入口：发送首帧快照 + 调度脚本（在 js_glue 运行前调用，脚本作为宏任务延迟）
+        if let Some(state) = &self.state {
+            crate::bridge::init_html_entry(ctx, host, state)?;
+        }
         Ok(())
     }
 

@@ -141,12 +141,9 @@ JS 包装层       → Node / Element / HTMLElement / Document …
 
 `NodeHandle` 仅有一个 JS 属性 `_id`（数字），所有 DOM 方法均在 TS 层通过调用全局 `__web_atom_dom.*` 函数完成。
 
-```
-
 TS 源码经 Rolldown 编译为 `crates/dom/js/dist/index.js`（`iife` 格式），Rust 侧通过 `include_str!` 嵌入二进制，Context 初始化时执行注入。`dist/index.js` 提交到仓库，使用方无需安装 Node 即可构建。
 
 新增 Web 特性：在 `crates/web/src/` 添加新模块，并在 `lib.rs` 的 `init()` 中注册即可。
-
 
 ## 设计规则
 
@@ -165,7 +162,7 @@ TS 源码经 Rolldown 编译为 `crates/dom/js/dist/index.js`（`iife` 格式）
 5. **unsafe 仅限 rquickjs FFI 边界** — 将 unsafe 集中在一处并加以注释说明。
 6. **按 W3C 继承链增量实现** — 按 `Node → Element → HTMLElement → ...` 顺序实现，不跳过基础接口。
 7. **Rust 只做原语，不做 API** — 凡是可以在 JS 层组合原语实现的功能，不在 Rust 侧重复实现（如 `querySelector`、`innerHTML`、`classList` 等均属 JS 层）。
-8. ** 内部原语** — 以 `import {} from 'webatom_ext_native:dom'` 方式导入 JS 层内部调用，不属于对外 DOM API，用户代码不应直接使用。
+8. **内部原语** — 以 `import {} from 'webatom_ext_native:dom'` 方式导入 JS 层内部调用，不属于对外 DOM API，用户代码不应直接使用。
 
 ## 帧同步：DOM 变更如何到达 Blitz
 
@@ -265,3 +262,248 @@ BlitzEvent::IntersectionEntries { entries: Vec<IntersectionEntry> }
 - [denoland/deno](https://github.com/denoland/deno) — Deno 核心运行时，包含 URL、URLSearchParams、TextEncoder/TextDecoder、console、fetch、setTimeout 等 JS 基础 API 的规范参照实现；实现 `web/` crate 中各类 Web API 时以此为主要参考
 - [jsdom](https://github.com/jsdom/jsdom) — Node.js 下完整 DOM 实现，JS 层参考
 - [servo/html5ever](https://github.com/servo/html5ever) — Rust HTML 解析器，后续集成 HTML 解析时参考
+
+---
+
+## HTML 入口（HtmlEntry）
+
+### 概述
+
+`HtmlEntry` 表示一个 HTML 入口文件，支持本地文件路径和 HTTP/HTTPS URL 两种来源。它负责提供原始 HTML 内容和基础 URL（用于相对路径解析），存储在 `DomExtensionState` 中供整个 DOM 扩展生命周期使用。
+
+---
+
+### HtmlEntry 结构
+
+```rust
+// packages/extension-dom/src/html_entry.rs
+
+pub struct HtmlEntry {
+    /// 原始入口地址（file:// URL 或 http(s):// URL）
+    pub url: String,
+    /// 相对路径解析基准（同目录 URL，末尾含 /）
+    pub base_url: String,
+    /// 原始 HTML 文本
+    pub content: String,
+}
+```
+
+**base_url 计算规则：**
+
+| 来源 | 示例输入 | base_url |
+|------|----------|----------|
+| 本地文件路径 | `/home/user/app/index.html` | `file:///home/user/app/` |
+| file:// URL | `file:///home/user/app/index.html` | `file:///home/user/app/` |
+| HTTP URL | `https://example.com/app/index.html` | `https://example.com/app/` |
+
+规则：取 URL 最后一个 `/` 之前的部分，追加 `/`。
+
+---
+
+### 加载方式
+
+```rust
+impl HtmlEntry {
+    /// 自动检测来源并异步加载
+    pub async fn load(source: impl Into<String>) -> Result<Arc<Self>, HtmlEntryError> {
+        let source = source.into();
+        if source.starts_with("http://") || source.starts_with("https://") {
+            Self::from_http(source).await
+        } else {
+            Self::from_file(source).await
+        }
+    }
+
+    /// 从本地文件加载（支持裸路径和 file:// URL）
+    async fn from_file(path: String) -> Result<Arc<Self>, HtmlEntryError>;
+
+    /// 从 HTTP/HTTPS URL 加载（Phase 2）
+    async fn from_http(url: String) -> Result<Arc<Self>, HtmlEntryError>;
+}
+```
+
+Phase 1 只实现 `from_file`；`from_http` 在 Phase 2 实现，Phase 1 直接返回 `HtmlEntryError::HttpNotSupported`。
+
+---
+
+### 与 DomExtensionState 集成
+
+```rust
+#[derive(rquickjs::JsLifetime, Clone)]
+pub struct DomExtensionState {
+    channel: Arc<JsSide>,
+    entry: Option<Arc<HtmlEntry>>,   // 新增字段
+}
+
+impl DomExtensionState {
+    /// 入口页面的基础 URL（用于相对路径解析）
+    pub fn base_url(&self) -> Option<&str> {
+        self.entry.as_ref().map(|e| e.base_url.as_str())
+    }
+
+    /// 入口页面的原始 HTML 内容
+    pub fn html_content(&self) -> Option<&str> {
+        self.entry.as_ref().map(|e| e.content.as_str())
+    }
+}
+```
+
+`ImportMapState` 继续作为独立 userdata 存在（运行时可变状态，与 `HtmlEntry` 不可变初始状态分离）。
+
+---
+
+### 数据流：从入口到首帧
+
+```
+HtmlEntry::load(path_or_url)
+        │
+        ▼
+DomExtensionState { entry: Some(arc) }
+        │
+        ▼  install() 调用
+DocumentHandle::js_new(ctx)
+  └─ html_content() 有值 → Document::new_html(content)
+  └─ 无值            → Document::new_empty()
+        │
+        ▼
+Document::all_scripts_in_order()   ← DFS 遍历，按文档顺序收集所有 <script>
+        │
+        ▼ 对每个 ScriptInfo
+  ┌─────┴──────────────────────────────────┐
+  │ ImportMap → 立即解析，更新 ImportMapState│
+  │ Classic   → schedule_eval(source)      │
+  │ Module    → schedule_eval_module(...)  │
+  └────────────────────────────────────────┘
+        │
+        ▼
+Document → DomSnapshot
+dom_tx.send(DomMsg::Full(snapshot))     ← 首帧全量快照
+```
+
+---
+
+### Document::all_scripts_in_order
+
+```rust
+impl Document {
+    /// DFS 遍历文档树，按文档顺序返回所有 <script> 节点的 ScriptInfo
+    pub fn all_scripts_in_order(&self) -> Vec<ScriptInfo> {
+        let mut result = Vec::new();
+        self.dfs_scripts(self.root_id(), &mut result);
+        result
+    }
+
+    fn dfs_scripts(&self, node: usize, out: &mut Vec<ScriptInfo>) {
+        if let Some(info) = self.script_info(node) {
+            out.push(info);
+        }
+        for child in self.children(node) {
+            self.dfs_scripts(child, out);
+        }
+    }
+}
+```
+
+---
+
+### load_source 相对路径解析
+
+`script.rs` 中的 `load_source()` 在处理相对路径时，使用 `DomExtensionState::base_url()` 拼接：
+
+```rust
+fn load_source(src: &str, base_url: Option<&str>) -> Result<String> {
+    if src.starts_with("http://") || src.starts_with("https://") {
+        // Phase 2
+        return Err(...);
+    }
+    let resolved = if src.starts_with("file://") {
+        src.to_string()
+    } else if src.starts_with('/') {
+        format!("file://{src}")
+    } else {
+        // 相对路径：拼接 base_url
+        match base_url {
+            Some(base) => format!("{base}{src}"),
+            None => return Err(anyhow::anyhow!("relative src without base_url")),
+        }
+    };
+    let path = resolved.strip_prefix("file://").unwrap_or(&resolved);
+    std::fs::read_to_string(path).map_err(Into::into)
+}
+```
+
+---
+
+### DocumentHandle::js_new 中的入口初始化
+
+```rust
+impl DocumentHandle {
+    pub fn js_new(ctx: &Ctx<'_>) -> Result<Self> {
+        let dom_state: Option<DomExtensionState> = ctx.userdata::<DomExtensionState>()
+            .map(|g| (*g).clone());
+
+        let doc = match dom_state.as_ref().and_then(|s| s.html_content()) {
+            Some(html) => Document::new_html(html),
+            None       => Document::new_empty(),
+        };
+
+        // ... 其余初始化
+    }
+}
+```
+
+---
+
+### install() 中的脚本调度
+
+```rust
+pub fn install(ctx: &Ctx<'_>, state: DomExtensionState) -> Result<()> {
+    // ... 注册 userdata、JS 绑定等
+
+    // 获取 DocumentHandle（已通过 js_new 解析了 HTML）
+    let doc_handle: DocumentHandle = /* 从 ctx 取 */;
+    let host: Option<HostBridge> = ctx.userdata::<HostBridge>().map(|g| (*g).clone());
+
+    // 发送首帧全量快照
+    let snapshot = doc_handle.to_snapshot();
+    state.send_patch(vec![DomOp::Full(snapshot)]);  // 或 DomMsg::Full
+
+    // 按文档顺序调度所有脚本
+    for info in doc_handle.with_doc(|d| d.all_scripts_in_order()) {
+        execute_script(ctx, host.as_ref(), info, 0 /* root */)?;
+    }
+
+    Ok(())
+}
+```
+
+---
+
+### 阶段划分
+
+| 功能 | 阶段 |
+|------|------|
+| 本地文件加载 (`from_file`) | Phase 1 |
+| `HtmlEntry` 集成到 `DomExtensionState` | Phase 1 |
+| `DocumentHandle::js_new` 使用 HTML 内容 | Phase 1 |
+| `all_scripts_in_order` + 脚本调度 | Phase 1 |
+| `DomMsg::Full` 首帧快照 | Phase 1 |
+| HTTP/HTTPS 入口加载 (`from_http`) | Phase 2 |
+| HTTP `<script src>` 加载 | Phase 2 |
+| `DOMContentLoaded` 事件 | Phase 2 |
+
+---
+
+### 文件位置
+
+```
+packages/extension-dom/src/
+  html_entry.rs          ← HtmlEntry 结构 + load/from_file/from_http
+  dom_extension.rs       ← DomExtensionState 添加 entry 字段
+  bridge/
+    document_handle.rs   ← js_new 使用 html_content()
+    script.rs            ← load_source 接收 base_url 参数
+    snapshot.rs          ← Document → DomSnapshot 转换（新建）
+  core/
+    document.rs          ← all_scripts_in_order + dfs_scripts
+```

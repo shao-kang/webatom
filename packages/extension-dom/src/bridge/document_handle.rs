@@ -96,8 +96,11 @@ impl DocumentHandle {
             .clone();
         let guard = host.runtime.keepalive.acquire();
         let dom_state = _ctx.userdata::<DomExtensionState>().map(|g| (*g).clone());
+        // 若有 HTML 入口，以其内容初始化 Document，与首帧快照保持一致
+        let html = dom_state.as_ref().and_then(|s| s.html_content()).unwrap_or("");
+        let inner = Rc::new(RefCell::new(DocumentInner::new_html(html)));
         Self {
-            inner: Rc::new(RefCell::new(DocumentInner::new_html(""))),
+            inner,
             keepalive: guard,
             flush_pending: Arc::new(AtomicBool::new(false)),
             host: Some(host),

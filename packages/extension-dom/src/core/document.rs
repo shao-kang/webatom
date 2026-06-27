@@ -1,5 +1,6 @@
 use slab::Slab;
 use markup5ever::{LocalName, Namespace, QualName};
+use webatom_blitz_msg::snapshot::{DomSnapshot, SnapshotNode, SnapshotNodeData};
 
 use super::parse_html;
 
@@ -266,6 +267,44 @@ impl Document {
 
     pub fn node_ids(&self) -> Vec<usize> {
         self.nodes.iter().map(|(id, _)| id).collect()
+    }
+
+    /// DFS 遍历文档树，按文档顺序返回所有 `<script>` 节点的 ScriptInfo。
+    pub fn all_scripts_in_order(&self) -> Vec<ScriptInfo> {
+        let mut result = Vec::new();
+        self.dfs_scripts(self.root, &mut result);
+        result
+    }
+
+    fn dfs_scripts(&self, node_id: usize, out: &mut Vec<ScriptInfo>) {
+        if let Some(info) = self.script_info(node_id) {
+            out.push(info);
+        }
+        if let Some(node) = self.nodes.get(node_id) {
+            for &child in &node.children {
+                self.dfs_scripts(child, out);
+            }
+        }
+    }
+
+    /// 将整棵 Document 序列化为 DomSnapshot（供首帧全量发送）。
+    pub fn to_snapshot(&self) -> DomSnapshot {
+        let nodes = self.nodes.iter().map(|(id, node)| {
+            let data = match &node.data {
+                NodeData::Document => SnapshotNodeData::Document,
+                NodeData::Element(_) => SnapshotNodeData::Element {
+                    tag: self.tag_name(id).unwrap_or_default(),
+                    attrs: self.attributes_list(id),
+                },
+                NodeData::Text(t) => SnapshotNodeData::Text { content: t.content.clone() },
+                NodeData::Comment { contents } => {
+                    SnapshotNodeData::Comment { content: contents.clone() }
+                }
+                NodeData::Fragment(_) => SnapshotNodeData::Document,
+            };
+            SnapshotNode { id, parent: node.parent, children: node.children.clone(), data }
+        }).collect();
+        DomSnapshot { nodes, root: self.root }
     }
 }
 
