@@ -20,4 +20,4 @@ tracing-subscriber = { workspace = true }
 webatom-js-runtime-macro = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "net", "io-util"] }
