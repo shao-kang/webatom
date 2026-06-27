@@ -7,7 +7,7 @@ use rquickjs::{
 };
 use webatom_blitz_msg::{msg::DomMsg, patch::DomOp, JsSide};
 
-use crate::bridge::{DocumentHandle, NodeHandle};
+use crate::bridge::{DocumentHandle, ImportMapState, NodeHandle};
 
 // ── Native module ─────────────────────────────────────────────────────────────
 
@@ -90,6 +90,8 @@ impl Extension for DomExtension {
             ctx.store_userdata(state.clone())?;
         }
         ctx.store_userdata(host.clone())?;
+        // ImportMapState：初始为空，<script type="importmap"> 解析后更新
+        ctx.store_userdata(ImportMapState::new())?;
         Ok(())
     }
 

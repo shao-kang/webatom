@@ -177,7 +177,7 @@ impl DocumentHandle {
             DomOp::AppendChild { parent: parent_id, child: child_id }
         );
         if let Some(info) = self.inner.borrow().doc.script_info(child_id) {
-            execute_script(&ctx, info, child_id)?;
+            execute_script(&ctx, self.host.as_ref(), info, child_id)?;
         }
         self.schedule_flush();
         Ok(())
@@ -215,7 +215,7 @@ impl DocumentHandle {
             DomOp::InsertBefore { parent: parent_id, child: new_id, before: before_id }
         );
         if let Some(info) = self.inner.borrow().doc.script_info(new_id) {
-            execute_script(&ctx, info, new_id)?;
+            execute_script(&ctx, self.host.as_ref(), info, new_id)?;
         }
         self.schedule_flush();
         Ok(())
