@@ -6,13 +6,32 @@ use super::parse_html;
 use super::{Attributes, ElementData, Node, TextNodeData};
 use super::node::NodeData;
 
+pub enum ScriptKind {
+    Classic,
+    Module,
+    ImportMap,
+}
+
+pub struct ScriptInfo {
+    pub kind: ScriptKind,
+    /// `src` 属性值（外部脚本）
+    pub src: Option<String>,
+    /// `async` 属性（经典脚本异步加载；模块脚本取消 defer）
+    pub is_async: bool,
+    /// `defer` 属性（经典脚本延迟执行，仅 src 有效）
+    pub defer: bool,
+    /// `nomodule` 属性（支持模块的环境应忽略此脚本）
+    pub nomodule: bool,
+    /// 内联文本内容（src 存在时通常为空）
+    pub content: String,
+}
+
 pub struct Document {
     nodes: Slab<Node>,
     root: usize,
     pub document_element: Option<usize>,
     pub body: Option<usize>,
     pub head: Option<usize>,
-    
 
 }
 
@@ -204,6 +223,41 @@ impl Document {
             .and_then(|n| n.data.attrs())
             .map(|attrs| attrs.iter().map(|a| (a.name.local.to_string(), a.value.clone())).collect())
             .unwrap_or_default()
+    }
+
+    /// 若 `id` 是 `<script>` 元素且 type 已知，返回 `ScriptInfo`；未知 type 返回 None
+    pub fn script_info(&self, id: usize) -> Option<ScriptInfo> {
+        let NodeData::Element(e) = &self.nodes.get(id)?.data else { return None };
+        if !e.name.local.as_ref().eq_ignore_ascii_case("script") { return None; }
+
+        let attr = |name: &str| -> Option<&str> {
+            e.attrs.iter()
+                .find(|a| a.name.local.as_ref().eq_ignore_ascii_case(name))
+                .map(|a| a.value.as_str())
+        };
+
+        let ty = attr("type").unwrap_or("").trim();
+        let kind = match ty {
+            "" | "text/javascript" | "text/ecmascript"
+            | "application/javascript" | "application/ecmascript" => ScriptKind::Classic,
+            "module"    => ScriptKind::Module,
+            "importmap" => ScriptKind::ImportMap,
+            _           => return None,
+        };
+
+        let src      = attr("src").map(|s| s.to_owned());
+        let is_async = attr("async").is_some();
+        let defer    = attr("defer").is_some();
+        let nomodule = attr("nomodule").is_some();
+
+        let content: String = self.nodes[id].children.iter()
+            .filter_map(|&c| match &self.nodes.get(c)?.data {
+                NodeData::Text(t) => Some(t.content.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        Some(ScriptInfo { kind, src, is_async, defer, nomodule, content })
     }
 
     pub fn remove_node(&mut self, id: usize) {

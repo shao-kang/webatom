@@ -90,6 +90,46 @@ impl JsRuntime {
         Ok(result)
     }
 
+    /// 将一段 JS 代码作为宏任务投递到事件循环（fire & forget，不阻塞当前执行）。
+    /// 适用于 defer / async 脚本、需要延迟到当前帧结束后执行的代码。
+    pub fn schedule_eval(&self, source: impl Into<String>) -> Result<(), JsRuntimeError> {
+        let source = source.into();
+        self.event_loop
+            .handle()
+            .task_tx
+            .try_send(Box::new(move |ctx: rquickjs::Ctx<'_>| {
+                use rquickjs::CatchResultExt;
+                ctx.eval::<(), _>(source.as_bytes())
+                    .catch(&ctx)
+                    .map_err(|e| e.throw(&ctx))
+            }))
+            .map_err(|_| JsRuntimeError::Shutdown)
+    }
+
+    /// 将一个 ES 模块作为宏任务投递到事件循环（fire & forget）。
+    /// `specifier` 作为模块名（可为合成 URL），供 loader 解析模块内的相对 import。
+    pub fn schedule_eval_module(
+        &self,
+        specifier: impl Into<String>,
+        source: impl Into<String>,
+    ) -> Result<(), JsRuntimeError> {
+        let specifier = specifier.into();
+        let source = source.into();
+        self.event_loop
+            .handle()
+            .task_tx
+            .try_send(Box::new(move |ctx: rquickjs::Ctx<'_>| {
+                use rquickjs::CatchResultExt;
+                rquickjs::Module::evaluate(ctx.clone(), specifier.as_str(), source)
+                    .catch(&ctx)
+                    .map_err(|e| e.throw(&ctx))?
+                    .finish::<()>()
+                    .catch(&ctx)
+                    .map_err(|e| e.throw(&ctx))
+            }))
+            .map_err(|_| JsRuntimeError::Shutdown)
+    }
+
     /// Run the event loop to completion. After this returns, `eval` will
     /// return `Err(JsRuntimeError::Shutdown)`.
     pub async fn run(&mut self) -> Result<(), JsRuntimeError> {

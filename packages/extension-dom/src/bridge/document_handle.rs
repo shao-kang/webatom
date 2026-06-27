@@ -1,13 +1,17 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use js_runtime::event_loop::{EventLoopHandle, AfterMicrotaskTask};
+use js_runtime::event_loop::{HostBridge, KeepaliveGuard};
 use rquickjs::{Class, Ctx, Persistent, Result, Value};
 use rquickjs::class::Trace;
-use tokio::sync::oneshot;
+use webatom_blitz_msg::patch::DomOp;
 
-use super::document_inner::DocumentInner;
+use crate::dom_extension::DomExtensionState;
+use super::document_inner::{DocumentInner, PatchBuffer};
 use super::node_handle::NodeHandle;
+use super::script::execute_script;
 
 #[derive(Trace)]
 #[rquickjs::class(rename = "DocumentHandle")]
@@ -15,7 +19,15 @@ pub struct DocumentHandle {
     #[qjs(skip_trace)]
     pub(crate) inner: Rc<RefCell<DocumentInner>>,
     #[qjs(skip_trace)]
-    pub tx: Option<tokio::sync::oneshot::Sender<()>>,
+    keepalive: Option<KeepaliveGuard>,
+    #[qjs(skip_trace)]
+    flush_pending: Arc<AtomicBool>,
+    #[qjs(skip_trace)]
+    host: Option<HostBridge>,
+    #[qjs(skip_trace)]
+    patch_buffer: Arc<Mutex<PatchBuffer>>,
+    #[qjs(skip_trace)]
+    dom_state: Option<DomExtensionState>,
 }
 
 unsafe impl<'js> rquickjs::JsLifetime<'js> for DocumentHandle {
@@ -24,7 +36,32 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for DocumentHandle {
 
 impl DocumentHandle {
     pub fn new() -> Self {
-        Self { inner: Rc::new(RefCell::new(DocumentInner::new())), tx: None }
+        Self {
+            inner: Rc::new(RefCell::new(DocumentInner::new())),
+            keepalive: None,
+            flush_pending: Arc::new(AtomicBool::new(false)),
+            host: None,
+            patch_buffer: Arc::new(Mutex::new(PatchBuffer::new())),
+            dom_state: None,
+        }
+    }
+
+    fn schedule_flush(&self) {
+        let Some(host) = &self.host else { return };
+        if self.flush_pending.swap(true, Ordering::AcqRel) { return; }
+        let pending = Arc::clone(&self.flush_pending);
+        let patch_buffer = Arc::clone(&self.patch_buffer);
+        let dom_state = self.dom_state.clone();
+        let _ = host.io.task_tx.try_send(Box::new(move |_ctx| {
+            pending.store(false, Ordering::Release);
+            let ops = patch_buffer.lock().unwrap().drain_ops();
+            if !ops.is_empty() {
+                if let Some(state) = &dom_state {
+                    state.send_patch(ops);
+                }
+            }
+            Ok(())
+        }));
     }
 
     fn get_or_create<'js>(&self, ctx: Ctx<'js>, id: usize) -> Result<Value<'js>> {
@@ -49,67 +86,53 @@ impl DocumentHandle {
         Ok(val)
     }
 }
-impl Drop for DocumentHandle {
-    fn drop(&mut self) {
-
-        if let Some(sender) = self.tx.take() {
-            // 现在 sender 拥有了所有权，可以安全调用 send()
-            sender.send(()).unwrap(); 
-        }
-    }
-}
 #[rquickjs::methods]
 impl DocumentHandle {
     #[qjs(constructor)]
     pub fn js_new<'js>(_ctx: Ctx<'js>) -> Self {
         tracing::info!("new handle document");
-        // println!("new handle document");
-        // let mut _self = match html {
-        //     Some(h) => Self {
-        //         inner: Rc::new(RefCell::new(DocumentInner::new_html(&h))),
-        //         tx: None,
-        //     },
-        //     None => Self {
-        //         inner: Rc::new(RefCell::new(DocumentInner::new_html(""))),
-        //         tx: None,
-        //     },
-        // };
-        let mut _self = Self {
-                inner: Rc::new(RefCell::new(DocumentInner::new_html(""))),
-                tx: None,
-            };
-
-
-        let _event_handle = _ctx.userdata::<EventLoopHandle>()
-            .expect("EventLoopHandle userdata not registered")
+        let host = _ctx.userdata::<HostBridge>()
+            .expect("HostBridge userdata not registered")
             .clone();
-        let guard = _event_handle.active_handles.acquire();
-        let (tx, rx) = oneshot::channel();
-        _self.tx = Some(tx);
-        _ctx.spawn(async move {
-            let _guard = guard;
-            tokio::select! {
-                _ = rx => {}
-            }
-        });
-        _self
+        let guard = host.runtime.keepalive.acquire();
+        let dom_state = _ctx.userdata::<DomExtensionState>().map(|g| (*g).clone());
+        Self {
+            inner: Rc::new(RefCell::new(DocumentInner::new_html(""))),
+            keepalive: guard,
+            flush_pending: Arc::new(AtomicBool::new(false)),
+            host: Some(host),
+            patch_buffer: Arc::new(Mutex::new(PatchBuffer::new())),
+            dom_state,
+        }
     }
 
     #[qjs(rename = "createElement")]
     pub fn create_element<'js>(&self, ctx: Ctx<'js>, tag: String) -> Result<Value<'js>> {
         let id = self.inner.borrow_mut().doc.create_element(&tag);
+        self.patch_buffer.lock().unwrap().push_structural(
+            DomOp::CreateElement { id, tag, attrs: vec![] }
+        );
+        self.schedule_flush();
         self.get_or_create(ctx, id)
     }
 
     #[qjs(rename = "createTextNode")]
     pub fn create_text_node<'js>(&self, ctx: Ctx<'js>, content: String) -> Result<Value<'js>> {
         let id = self.inner.borrow_mut().doc.create_text_node(&content);
+        self.patch_buffer.lock().unwrap().push_structural(
+            DomOp::CreateText { id, content }
+        );
+        self.schedule_flush();
         self.get_or_create(ctx, id)
     }
 
     #[qjs(rename = "createComment")]
     pub fn create_comment<'js>(&self, ctx: Ctx<'js>, content: String) -> Result<Value<'js>> {
         let id = self.inner.borrow_mut().doc.create_comment(&content);
+        self.patch_buffer.lock().unwrap().push_structural(
+            DomOp::CreateComment { id, content }
+        );
+        self.schedule_flush();
         self.get_or_create(ctx, id)
     }
 
@@ -142,8 +165,7 @@ impl DocumentHandle {
     #[qjs(rename = "appendChild")]
     pub fn append_child<'js>(
         &self,
-        _ctx: Ctx<'js>,
-
+        ctx: Ctx<'js>,
         parent: Class<'_, NodeHandle>,
         child: Class<'_, NodeHandle>,
     ) -> Result<()> {
@@ -151,15 +173,13 @@ impl DocumentHandle {
         let parent_id = parent.borrow().id;
         let child_id = child.borrow().id;
         self.inner.borrow_mut().doc.append_child(parent_id, child_id);
-        _ctx.userdata::<EventLoopHandle>()
-            .expect("EventLoopHandle userdata not registered")
-            .after_microtask_queue
-            .lock()
-            .unwrap()
-            .push_back(AfterMicrotaskTask::from_rust(|_ctx| {
-                tracing::info!("after_microtask  append_child");
-                Ok(())
-            }));
+        self.patch_buffer.lock().unwrap().push_structural(
+            DomOp::AppendChild { parent: parent_id, child: child_id }
+        );
+        if let Some(info) = self.inner.borrow().doc.script_info(child_id) {
+            execute_script(&ctx, info, child_id)?;
+        }
+        self.schedule_flush();
         Ok(())
     }
 
@@ -172,21 +192,32 @@ impl DocumentHandle {
         let parent_id = parent.borrow().id;
         let child_id = child.borrow().id;
         self.inner.borrow_mut().doc.remove_child(parent_id, child_id);
+        self.patch_buffer.lock().unwrap().push_structural(
+            DomOp::RemoveChild { parent: parent_id, child: child_id }
+        );
+        self.schedule_flush();
         Ok(())
     }
 
     #[qjs(rename = "insertBefore")]
-    pub fn insert_before(
+    pub fn insert_before<'js>(
         &self,
+        ctx: Ctx<'js>,
         parent: Class<'_, NodeHandle>,
         new_node: Class<'_, NodeHandle>,
         ref_node: Class<'_, NodeHandle>,
     ) -> Result<()> {
-        self.inner.borrow_mut().doc.insert_before(
-            parent.borrow().id,
-            new_node.borrow().id,
-            ref_node.borrow().id,
+        let parent_id = parent.borrow().id;
+        let new_id = new_node.borrow().id;
+        let before_id = ref_node.borrow().id;
+        self.inner.borrow_mut().doc.insert_before(parent_id, new_id, before_id);
+        self.patch_buffer.lock().unwrap().push_structural(
+            DomOp::InsertBefore { parent: parent_id, child: new_id, before: before_id }
         );
+        if let Some(info) = self.inner.borrow().doc.script_info(new_id) {
+            execute_script(&ctx, info, new_id)?;
+        }
+        self.schedule_flush();
         Ok(())
     }
 
@@ -272,7 +303,13 @@ impl DocumentHandle {
 
     #[qjs(rename = "setNodeValue")]
     pub fn set_node_value(&self, node: Class<'_, NodeHandle>, value: Option<String>) -> Result<()> {
-        self.inner.borrow_mut().doc.set_node_value(node.borrow().id, value.as_deref().unwrap_or(""));
+        let id = node.borrow().id;
+        let mut inner = self.inner.borrow_mut();
+        inner.doc.set_node_value(id, value.as_deref().unwrap_or(""));
+        let content = inner.doc.node_value(id).unwrap_or_default();
+        drop(inner);
+        self.patch_buffer.lock().unwrap().mark_text(id, content);
+        self.schedule_flush();
         Ok(())
     }
 
@@ -296,9 +333,16 @@ impl DocumentHandle {
         let parent_id = parent.borrow().id;
         let new_id = new_node.borrow().id;
         let old_id = old_node.borrow().id;
-        let mut inner = self.inner.borrow_mut();
-        inner.doc.insert_before(parent_id, new_id, old_id);
-        inner.doc.remove_child(parent_id, old_id);
+        {
+            let mut inner = self.inner.borrow_mut();
+            inner.doc.insert_before(parent_id, new_id, old_id);
+            inner.doc.remove_child(parent_id, old_id);
+        }
+        let mut buf = self.patch_buffer.lock().unwrap();
+        buf.push_structural(DomOp::InsertBefore { parent: parent_id, child: new_id, before: old_id });
+        buf.push_structural(DomOp::RemoveChild { parent: parent_id, child: old_id });
+        drop(buf);
+        self.schedule_flush();
         Ok(())
     }
 
@@ -326,13 +370,25 @@ impl DocumentHandle {
         name: String,
         value: String,
     ) -> Result<()> {
-        self.inner.borrow_mut().doc.set_attribute(node.borrow().id, &name, &value);
+        let id = node.borrow().id;
+        let mut inner = self.inner.borrow_mut();
+        inner.doc.set_attribute(id, &name, &value);
+        let attrs = inner.doc.attributes_list(id);
+        drop(inner);
+        self.patch_buffer.lock().unwrap().mark_attrs(id, attrs);
+        self.schedule_flush();
         Ok(())
     }
 
     #[qjs(rename = "removeAttribute")]
     pub fn remove_attribute(&self, node: Class<'_, NodeHandle>, name: String) -> Result<()> {
-        self.inner.borrow_mut().doc.remove_attribute(node.borrow().id, &name);
+        let id = node.borrow().id;
+        let mut inner = self.inner.borrow_mut();
+        inner.doc.remove_attribute(id, &name);
+        let attrs = inner.doc.attributes_list(id);
+        drop(inner);
+        self.patch_buffer.lock().unwrap().mark_attrs(id, attrs);
+        self.schedule_flush();
         Ok(())
     }
 }

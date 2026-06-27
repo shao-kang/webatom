@@ -167,6 +167,98 @@ TS 源码经 Rolldown 编译为 `crates/dom/js/dist/index.js`（`iife` 格式）
 7. **Rust 只做原语，不做 API** — 凡是可以在 JS 层组合原语实现的功能，不在 Rust 侧重复实现（如 `querySelector`、`innerHTML`、`classList` 等均属 JS 层）。
 8. ** 内部原语** — 以 `import {} from 'webatom_ext_native:dom'` 方式导入 JS 层内部调用，不属于对外 DOM API，用户代码不应直接使用。
 
+## 帧同步：DOM 变更如何到达 Blitz
+
+### 核心原则
+
+**JS → Blitz 方向只传递 DOM 节点信息**，使用 `webatom-blitz-msg` 定义的消息类型，没有 LayoutRequest / PaintRequest 等额外协议。
+
+### 信道
+
+```
+JS 线程                                    Blitz 线程（winit 事件循环）
+──────────────────────────────────────────────────────────────────────
+dom_tx.send(DomMsg)  ──crossbeam──→  drain_dom_msgs() → apply → layout → paint
+event_rx  ←──────────crossbeam────  event_tx.send(BlitzEvent)
+```
+
+| 信道 | 类型 | 方向 | 语义 |
+|------|------|------|------|
+| `dom_tx` / `dom_rx` | `crossbeam_channel::unbounded` | JS → Blitz | DOM 变更，vsync 时排干并合并 |
+| `event_tx` / `event_rx` | `crossbeam_channel::unbounded` | Blitz → JS | 用户事件（Click / KeyDown / Resize …） |
+
+### 帧内执行顺序
+
+```
+Blitz 主循环
+  ① 平台 vsync 到达
+  ② vsync_tx.send(VsyncSignal { frame_id, ts })   → JS 线程 watch channel
+  ③ drain_dom_msgs()：取上一帧 JS 发来的 DOM patch，合并后 apply
+  ④ layout()
+  ⑤ paint() / present()
+
+JS 线程（EventLoop）
+  ① vsync_rx.changed() → 进入 RAF 阶段
+  ② 执行 rAF 回调（JS 调用 DOM 原语，DocumentHandle 收集 DomOp）
+  ③ microtask checkpoint
+  ④ dom_tx.send(DomMsg::Patch(ops))   ← 帧末唯一的同步消息，fire & forget
+```
+
+天然存在 **1 帧延迟**：JS 在第 N 帧写 DOM，Blitz 在第 N+1 帧渲染。与浏览器 commit 语义一致。
+
+### 不会阻塞线程
+
+- `dom_tx.send()` — `unbounded` channel，O(1)，永不阻塞
+- `vsync_rx.changed()` — `tokio::select!` 协程 yield，不阻塞 tokio 线程
+- `drain_dom_msgs()` — `try_recv()` 非阻塞轮询
+
+### DomOp 收集机制
+
+`DocumentHandle` 的每个变更方法在写 Rust Arena 的同时，把对应的 `DomOp` 追加到帧缓冲区：
+
+```rust
+// 伪码
+fn append_child(&mut self, parent: NodeId, child: NodeId) -> Result<()> {
+    self.doc.borrow_mut().tree_append(parent, child)?;          // 写 Arena
+    self.op_buffer.push(DomOp::AppendChild { parent, child });  // 收集 op
+    Ok(())
+}
+```
+
+`BlitzRenderScheduler::update_rendering` 在 rAF 后取走缓冲区并发送：
+
+```rust
+fn update_rendering(&mut self, ctx, raf_queue, _tick_id, ts) -> Result<()> {
+    // ① 执行 rAF 回调
+    for task in raf_queue.lock().drain(..) { task.call(ctx, ts)?; }
+    microtask_checkpoint(ctx, MicrotaskBudget::unlimited())?;
+
+    // ② 发送本帧 DOM patch（fire & forget）
+    if let Some(ops) = self.op_collector.take() {
+        let _ = self.dom_tx.send(DomMsg::Patch(ops));
+    }
+    Ok(())
+}
+```
+
+### 首帧全量快照
+
+Context 初始化时（DOM 扩展 `install()` 完成后），发送一次 `DomMsg::Full(snapshot)`，Blitz 以此重建完整树。后续帧均为增量 `Patch`。
+
+`drain_dom_msgs()` 内部已处理 Full/Patch 合并语义：Full 出现时丢弃之前所有 Patch，Patch 之间自动合并为一批。
+
+### BlitzEvent 回流（Phase 1）
+
+Blitz layout 完成后，把 ResizeObserver / IntersectionObserver 所需数据作为新的 `BlitzEvent` 变体发回 JS，由 EventLoop 在 idle 阶段通过 `drain_events()` 消费：
+
+```rust
+// 扩展 BlitzEvent（Phase 1）
+BlitzEvent::ResizeEntries { entries: Vec<ResizeEntry> }
+BlitzEvent::IntersectionEntries { entries: Vec<IntersectionEntry> }
+```
+
+不需要跨线程同步等待，与用户事件共享同一条 `event_rx` 通道。
+
 ### 类似实现（可借鉴）
 
 - [deno/deno_dom](https://github.com/nicolo-ribaudo/deno_dom) — Deno 的轻量 DOM 实现，纯 Rust，可参考节点结构设计

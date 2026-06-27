@@ -4,7 +4,7 @@ use webatom_extension_dom::DomExtension;
 async fn build() -> JsRuntime {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     match JsRuntime::builder()
-        .register_extension(DomExtension::new())
+        .with_extension(DomExtension::new())
         .build()
         .await {
             Ok(rt) => rt,
@@ -15,7 +15,7 @@ async fn build() -> JsRuntime {
             }
         }
 }
-async fn drop_runtime(rt: JsRuntime) {
+async fn drop_runtime(rt: &mut JsRuntime) {
    let _result = rt.eval::<()>("globalThis.document = undefined").await;
 }
 #[tokio::test]
@@ -39,14 +39,27 @@ async fn setup_dom_succeeds() {
 async fn build_dom_tree_and_print() {
     let mut _rt = build().await;
 
-    let rt = match _rt.eval_module("entry", include_str!("./dist/index.js")).await {
-        Ok(rt) => rt,
+    match _rt.eval_module("entry", include_str!("./dist/index.js")).await {
+        Ok(_) => {}
         Err(e) => {
             eprintln!("JS Execution Error: {:?}", e);
             panic!("Failed to load module: {:?}", e);
         }
     };
-    rt.run().await.expect("event loop failed");
+
+    let handle = _rt.handle();
+    tokio::spawn(async move {
+        let Some(_guard) = handle.keepalive_count.acquire() else { return };
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        // drop_runtime 等价操作
+        handle.task_tx.send(Box::new(|ctx| {
+            ctx.eval::<(), _>("globalThis.document = undefined")?;
+            Ok(())
+        })).await.ok();
+        // _guard 在此 drop，keepalive 归零，事件循环退出
+    });
+
+    _rt.run().await.expect("event loop failed");
         
 
     // println!("\n--- DOM Tree ---\n{tree}");

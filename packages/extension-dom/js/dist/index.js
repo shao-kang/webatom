@@ -570,7 +570,7 @@ const window = new Proxy(windowDefs, {
 	},
 	set(target, key, value) {
 		target[key] = value;
-		globalThis[key] = value;
+		if (!Object.getOwnPropertyDescriptor(globalThis, key)?.get) globalThis[key] = value;
 		return true;
 	},
 	has(target, key) {

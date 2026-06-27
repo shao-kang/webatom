@@ -118,8 +118,12 @@ export const window = new Proxy(windowDefs, {
   },
   set(target, key, value) {
     target[key as string] = value;
-    // 同步写回 globalThis，让裸变量访问也能拿到最新值
-    (globalThis as Record<string | symbol, unknown>)[key] = value;
+    // Skip write-back when globalThis already has an accessor for this key;
+    // the existing getter already reads through window, so no sync needed.
+    const desc = Object.getOwnPropertyDescriptor(globalThis as object, key as string);
+    if (!desc?.get) {
+      (globalThis as Record<string | symbol, unknown>)[key] = value;
+    }
     return true;
   },
   has(target, key) {

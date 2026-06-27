@@ -13,10 +13,8 @@ pub enum DomOp {
     /// 节点从 JS 侧彻底释放
     DropNode     { id: usize },
 
-    // ── 属性变更
-    SetAttribute    { node: usize, name: String, value: String },
-    SetAttributes   { node: usize, attrs: Vec<(String, String)> },
-    RemoveAttribute { node: usize, name: String },
+    // ── 属性变更（全量替换，Blitz 先清空再写入）
+    ReplaceAttributes { node: usize, attrs: Vec<(String, String)> },
 
     // ── 文本内容变更
     SetTextContent { node: usize, content: String },
