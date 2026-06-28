@@ -25,3 +25,11 @@ path = "test/dom/dom.rs"
 [[test]]
 name = "html_entry"
 path = "test/html_entry/html_entry.rs"
+
+[[test]]
+name = "html_entry_script"
+path = "test/html_entry_script/html_entry_script.rs"
+
+[[test]]
+name = "dom_tree"
+path = "test/dom_tree/dom_tree.rs"

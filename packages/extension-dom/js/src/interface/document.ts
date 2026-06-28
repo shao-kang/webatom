@@ -10,8 +10,11 @@ import { DocumentHandle, NodeHandle } from './native';
 
 import {DocumentContext} from './document-context.js'
 
+const documentHandle = new DocumentHandle();
+
 
 export class Document extends Node {
+    static readonly handle = documentHandle;
   
     _ctx: DocumentContext
     text = 'xxx'
@@ -32,6 +35,13 @@ export class Document extends Node {
 
   get documentElement(): Node | null {
     return this._wrap(this._docCtx.documentElement());
+  }
+  get body(): Node | null {
+    return this._wrap(this._docCtx.body());
+  }
+
+  get head(): Node | null {
+    return this._wrap(this._docCtx.head());
   }
 
   #createElementWithHandle(tagName: string, handle: NodeHandle ) {

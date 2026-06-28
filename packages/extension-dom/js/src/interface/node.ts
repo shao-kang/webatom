@@ -5,20 +5,12 @@ export { NodeHandle } from './native';
 import type { NodeHandle } from './native';
 import type { DocumentContext } from './document-context';
 
+import { getNodeFactory } from '@/html/index';
 
 
 
-// Wrap a NodeHandle into the correct Node subclass, reusing existing instances.
-export function wrapHandleWith(ctx: DocumentContext, handle: NodeHandle | null): Node | null {
-  if (!handle) return null;
-  const existing = ctx._handleNodeMap.get(handle);
-  if (existing) return existing;
-  const type = ctx.nodeType(handle);
-  const factory = nodeRegistry.get(type);
-  const node = factory ? factory(ctx, handle) : new Node(ctx, handle);
-  ctx._handleNodeMap.set(handle, node);
-  return node;
-}
+
+
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -62,14 +54,14 @@ class Node extends EventTarget {
   static readonly DOCUMENT_POSITION_CONTAINED_BY           = POSITION_CONSTANTS.DOCUMENT_POSITION_CONTAINED_BY;
   static readonly DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = POSITION_CONSTANTS.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
 
-  _handle?: NodeHandle;
+  _handle: NodeHandle;
   // _docCtx?: DocumentContext;
   get _docCtx(): DocumentContext {
     // @ts-expect-error yuji
     return document._docCtx
   }
 
-  constructor( handle?: NodeHandle) {
+  constructor( handle: NodeHandle) {
     super();
     this._handle = handle;
   }
@@ -301,3 +293,14 @@ for (const [key, value] of [...Object.entries(NODE_CONSTANTS), ...Object.entries
 }
 
 export { Node };
+// Wrap a NodeHandle into the correct Node subclass, reusing existing instances.
+export function wrapHandleWith(ctx: DocumentContext, handle: NodeHandle | null): Node | null {
+  if (!handle) return null;
+  const existing = ctx._handleNodeMap.get(handle);
+  if (existing) return existing;
+  const type = ctx.nodeType(handle);
+  const factory = getNodeFactory(type);
+  const node = factory ? factory(ctx, handle) : new Node(handle);
+  ctx._handleNodeMap.set(handle, node);
+  return node;
+}

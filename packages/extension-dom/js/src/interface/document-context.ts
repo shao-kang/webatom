@@ -9,7 +9,6 @@ export class DocumentContext {
   constructor() {
     this._docHandle = new DocumentHandle();
   }
-
   getNode(node: NodeHandle): Node {
     return this._handleNodeMap.get(node)!;
   }
@@ -104,6 +103,14 @@ export class DocumentContext {
 
   documentElement(): NodeHandle | null {
     return this._docHandle.documentElement();
+  }
+
+  body(): NodeHandle | null {
+    return this._docHandle.body();
+  }
+
+  head(): NodeHandle | null {
+    return this._docHandle.head();
   }
 
   // ── Attributes ───────────────────────────────────────────────────────────

@@ -287,23 +287,49 @@ impl Document {
         }
     }
 
+    pub fn is_script_element(&self, id: usize) -> bool {
+        matches!(self.nodes.get(id), Some(n) if matches!(&n.data, NodeData::Element(e) if e.name.local.as_ref().eq_ignore_ascii_case("script")))
+    }
+
     /// 将整棵 Document 序列化为 DomSnapshot（供首帧全量发送）。
+    /// <script> 元素及其所有子节点不发送给渲染器。
     pub fn to_snapshot(&self) -> DomSnapshot {
-        let nodes = self.nodes.iter().map(|(id, node)| {
-            let data = match &node.data {
-                NodeData::Document => SnapshotNodeData::Document,
-                NodeData::Element(_) => SnapshotNodeData::Element {
-                    tag: self.tag_name(id).unwrap_or_default(),
-                    attrs: self.attributes_list(id),
-                },
-                NodeData::Text(t) => SnapshotNodeData::Text { content: t.content.clone() },
-                NodeData::Comment { contents } => {
-                    SnapshotNodeData::Comment { content: contents.clone() }
+        // 收集所有 <script> 节点及其后代的 id，渲染器不需要它们
+        let mut skip: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (id, node) in &self.nodes {
+            if let NodeData::Element(e) = &node.data {
+                if e.name.local.as_ref().eq_ignore_ascii_case("script") {
+                    let mut stack = vec![id];
+                    while let Some(cur) = stack.pop() {
+                        if skip.insert(cur) {
+                            if let Some(n) = self.nodes.get(cur) {
+                                stack.extend_from_slice(&n.children);
+                            }
+                        }
+                    }
                 }
-                NodeData::Fragment(_) => SnapshotNodeData::Document,
-            };
-            SnapshotNode { id, parent: node.parent, children: node.children.clone(), data }
-        }).collect();
+            }
+        }
+
+        let nodes = self.nodes.iter()
+            .filter(|(id, _)| !skip.contains(id))
+            .map(|(id, node)| {
+                let data = match &node.data {
+                    NodeData::Document => SnapshotNodeData::Document,
+                    NodeData::Element(_) => SnapshotNodeData::Element {
+                        tag: self.tag_name(id).unwrap_or_default(),
+                        attrs: self.attributes_list(id),
+                    },
+                    NodeData::Text(t) => SnapshotNodeData::Text { content: t.content.clone() },
+                    NodeData::Comment { contents } => {
+                        SnapshotNodeData::Comment { content: contents.clone() }
+                    }
+                    NodeData::Fragment(_) => SnapshotNodeData::Document,
+                };
+                let children = node.children.iter().copied().filter(|c| !skip.contains(c)).collect();
+                SnapshotNode { id, parent: node.parent, children, data }
+            })
+            .collect();
         DomSnapshot { nodes, root: self.root }
     }
 }

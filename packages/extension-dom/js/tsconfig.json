@@ -8,6 +8,9 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "skipLibCheck": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    },
     "types": ["./src/types/native.d.ts"]
   },
   "include": ["src/**/*.ts"]

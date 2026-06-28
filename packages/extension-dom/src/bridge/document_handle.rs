@@ -19,6 +19,7 @@ pub struct DocumentHandle {
     #[qjs(skip_trace)]
     pub(crate) inner: Rc<RefCell<DocumentInner>>,
     #[qjs(skip_trace)]
+    #[allow(dead_code)] // RAII guard: held to keep the event loop alive while this document exists
     keepalive: Option<KeepaliveGuard>,
     #[qjs(skip_trace)]
     flush_pending: Arc<AtomicBool>,
@@ -112,10 +113,12 @@ impl DocumentHandle {
     #[qjs(rename = "createElement")]
     pub fn create_element<'js>(&self, ctx: Ctx<'js>, tag: String) -> Result<Value<'js>> {
         let id = self.inner.borrow_mut().doc.create_element(&tag);
-        self.patch_buffer.lock().unwrap().push_structural(
-            DomOp::CreateElement { id, tag, attrs: vec![] }
-        );
-        self.schedule_flush();
+        if !tag.eq_ignore_ascii_case("script") {
+            self.patch_buffer.lock().unwrap().push_structural(
+                DomOp::CreateElement { id, tag, attrs: vec![] }
+            );
+            self.schedule_flush();
+        }
         self.get_or_create(ctx, id)
     }
 
@@ -165,6 +168,24 @@ impl DocumentHandle {
         }
     }
 
+    #[qjs(rename = "body")]
+    pub fn body<'js>(&self, ctx: Ctx<'js>) -> Result<Option<Value<'js>>> {
+        let id = self.inner.borrow().doc.body;
+        match id {
+            Some(id) => Ok(Some(self.get_or_create(ctx, id)?)),
+            None => Ok(None),
+        }
+    }
+
+    #[qjs(rename = "head")]
+    pub fn head<'js>(&self, ctx: Ctx<'js>) -> Result<Option<Value<'js>>> {
+        let id = self.inner.borrow().doc.head;
+        match id {
+            Some(id) => Ok(Some(self.get_or_create(ctx, id)?)),
+            None => Ok(None),
+        }
+    }
+
     #[qjs(rename = "appendChild")]
     pub fn append_child<'js>(
         &self,
@@ -176,10 +197,17 @@ impl DocumentHandle {
         let parent_id = parent.borrow().id;
         let child_id = child.borrow().id;
         self.inner.borrow_mut().doc.append_child(parent_id, child_id);
-        self.patch_buffer.lock().unwrap().push_structural(
-            DomOp::AppendChild { parent: parent_id, child: child_id }
-        );
-        if let Some(info) = self.inner.borrow().doc.script_info(child_id) {
+        let inner = self.inner.borrow();
+        let parent_is_script = inner.doc.is_script_element(parent_id);
+        let child_is_script = inner.doc.is_script_element(child_id);
+        let script_info = inner.doc.script_info(child_id);
+        drop(inner);
+        if !parent_is_script && !child_is_script {
+            self.patch_buffer.lock().unwrap().push_structural(
+                DomOp::AppendChild { parent: parent_id, child: child_id }
+            );
+        }
+        if let Some(info) = script_info {
             execute_script(&ctx, self.host.as_ref(), info, child_id)?;
         }
         self.schedule_flush();
@@ -214,10 +242,17 @@ impl DocumentHandle {
         let new_id = new_node.borrow().id;
         let before_id = ref_node.borrow().id;
         self.inner.borrow_mut().doc.insert_before(parent_id, new_id, before_id);
-        self.patch_buffer.lock().unwrap().push_structural(
-            DomOp::InsertBefore { parent: parent_id, child: new_id, before: before_id }
-        );
-        if let Some(info) = self.inner.borrow().doc.script_info(new_id) {
+        let inner = self.inner.borrow();
+        let parent_is_script = inner.doc.is_script_element(parent_id);
+        let new_is_script = inner.doc.is_script_element(new_id);
+        let script_info = inner.doc.script_info(new_id);
+        drop(inner);
+        if !parent_is_script && !new_is_script {
+            self.patch_buffer.lock().unwrap().push_structural(
+                DomOp::InsertBefore { parent: parent_id, child: new_id, before: before_id }
+            );
+        }
+        if let Some(info) = script_info {
             execute_script(&ctx, self.host.as_ref(), info, new_id)?;
         }
         self.schedule_flush();
@@ -231,7 +266,8 @@ impl DocumentHandle {
         node: Class<'_, NodeHandle>,
     ) -> Result<Option<Value<'js>>> {
         let id = node.borrow().id;
-        match self.inner.borrow().doc.parent_node(id) {
+        let pid = self.inner.borrow().doc.parent_node(id);
+        match pid {
             Some(pid) => Ok(Some(self.get_or_create(ctx, pid)?)),
             None => Ok(None),
         }
@@ -244,7 +280,8 @@ impl DocumentHandle {
         node: Class<'_, NodeHandle>,
     ) -> Result<Option<Value<'js>>> {
         let id = node.borrow().id;
-        match self.inner.borrow().doc.first_child(id) {
+        let cid = self.inner.borrow().doc.first_child(id);
+        match cid {
             Some(cid) => Ok(Some(self.get_or_create(ctx, cid)?)),
             None => Ok(None),
         }
@@ -257,7 +294,8 @@ impl DocumentHandle {
         node: Class<'_, NodeHandle>,
     ) -> Result<Option<Value<'js>>> {
         let id = node.borrow().id;
-        match self.inner.borrow().doc.last_child(id) {
+        let cid = self.inner.borrow().doc.last_child(id);
+        match cid {
             Some(cid) => Ok(Some(self.get_or_create(ctx, cid)?)),
             None => Ok(None),
         }
@@ -270,7 +308,8 @@ impl DocumentHandle {
         node: Class<'_, NodeHandle>,
     ) -> Result<Option<Value<'js>>> {
         let id = node.borrow().id;
-        match self.inner.borrow().doc.next_sibling(id) {
+        let sid = self.inner.borrow().doc.next_sibling(id);
+        match sid {
             Some(sid) => Ok(Some(self.get_or_create(ctx, sid)?)),
             None => Ok(None),
         }
@@ -283,7 +322,8 @@ impl DocumentHandle {
         node: Class<'_, NodeHandle>,
     ) -> Result<Option<Value<'js>>> {
         let id = node.borrow().id;
-        match self.inner.borrow().doc.previous_sibling(id) {
+        let sid = self.inner.borrow().doc.previous_sibling(id);
+        match sid {
             Some(sid) => Ok(Some(self.get_or_create(ctx, sid)?)),
             None => Ok(None),
         }
@@ -376,10 +416,13 @@ impl DocumentHandle {
         let id = node.borrow().id;
         let mut inner = self.inner.borrow_mut();
         inner.doc.set_attribute(id, &name, &value);
-        let attrs = inner.doc.attributes_list(id);
+        let is_script = inner.doc.is_script_element(id);
+        let attrs = if !is_script { inner.doc.attributes_list(id) } else { vec![] };
         drop(inner);
-        self.patch_buffer.lock().unwrap().mark_attrs(id, attrs);
-        self.schedule_flush();
+        if !is_script {
+            self.patch_buffer.lock().unwrap().mark_attrs(id, attrs);
+            self.schedule_flush();
+        }
         Ok(())
     }
 
@@ -388,10 +431,13 @@ impl DocumentHandle {
         let id = node.borrow().id;
         let mut inner = self.inner.borrow_mut();
         inner.doc.remove_attribute(id, &name);
-        let attrs = inner.doc.attributes_list(id);
+        let is_script = inner.doc.is_script_element(id);
+        let attrs = if !is_script { inner.doc.attributes_list(id) } else { vec![] };
         drop(inner);
-        self.patch_buffer.lock().unwrap().mark_attrs(id, attrs);
-        self.schedule_flush();
+        if !is_script {
+            self.patch_buffer.lock().unwrap().mark_attrs(id, attrs);
+            self.schedule_flush();
+        }
         Ok(())
     }
 }

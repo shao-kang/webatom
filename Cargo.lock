@@ -4927,7 +4927,11 @@ dependencies = [
  "blitz-shell",
  "crossbeam-channel",
  "markup5ever 0.39.0",
+ "tokio",
+ "tracing-subscriber",
  "webatom-blitz-msg",
+ "webatom-js-runtime",
+ "webatom_extension_dom",
  "winit",
 ]
 

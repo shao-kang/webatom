@@ -68,17 +68,13 @@ var DOMEventTarget = class {
 	}
 };
 //#endregion
+//#region src/html/index.ts
+const nodeRegistry = /* @__PURE__ */ new Map();
+const getNodeFactory = (nodeType) => {
+	return nodeRegistry.get(nodeType);
+};
+//#endregion
 //#region src/interface/node.ts
-function wrapHandleWith(ctx, handle) {
-	if (!handle) return null;
-	const existing = ctx._handleNodeMap.get(handle);
-	if (existing) return existing;
-	const type = ctx.nodeType(handle);
-	const factory = nodeRegistry.get(type);
-	const node = factory ? factory(ctx, handle) : new Node(ctx, handle);
-	ctx._handleNodeMap.set(handle, node);
-	return node;
-}
 const NODE_CONSTANTS = {
 	ELEMENT_NODE: 1,
 	ATTRIBUTE_NODE: 2,
@@ -343,6 +339,15 @@ for (const [key, value] of [...Object.entries(NODE_CONSTANTS), ...Object.entries
 	enumerable: true,
 	configurable: false
 });
+function wrapHandleWith(ctx, handle) {
+	if (!handle) return null;
+	const existing = ctx._handleNodeMap.get(handle);
+	if (existing) return existing;
+	const factory = getNodeFactory(ctx.nodeType(handle));
+	const node = factory ? factory(ctx, handle) : new Node(handle);
+	ctx._handleNodeMap.set(handle, node);
+	return node;
+}
 //#endregion
 //#region src/interface/document-context.ts
 var DocumentContext = class {
@@ -415,6 +420,12 @@ var DocumentContext = class {
 	documentElement() {
 		return this._docHandle.documentElement();
 	}
+	body() {
+		return this._docHandle.body();
+	}
+	head() {
+		return this._docHandle.head();
+	}
 	getAttribute(node, name) {
 		return this._docHandle.getAttribute(node, name);
 	}
@@ -433,7 +444,11 @@ var DocumentContext = class {
 };
 //#endregion
 //#region src/interface/document.ts
+const documentHandle = new DocumentHandle();
 var Document = class extends Node {
+	static {
+		this.handle = documentHandle;
+	}
 	constructor() {
 		super();
 		this.text = "xxx";
@@ -447,6 +462,12 @@ var Document = class extends Node {
 	}
 	get documentElement() {
 		return this._wrap(this._docCtx.documentElement());
+	}
+	get body() {
+		return this._wrap(this._docCtx.body());
+	}
+	get head() {
+		return this._wrap(this._docCtx.head());
 	}
 	#createElementWithHandle(tagName, handle) {
 		const node = new Node(handle);

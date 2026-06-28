@@ -6,3 +6,7 @@ const nodeRegistry = new Map<number, NodeFactory>();
 export function registerNodeType(nodeType: number, factory: NodeFactory): void {
   nodeRegistry.set(nodeType, factory);
 }
+
+export const getNodeFactory = (nodeType: number) => {
+  return nodeRegistry.get(nodeType);
+}

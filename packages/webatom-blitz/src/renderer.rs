@@ -135,21 +135,13 @@ fn apply_op(mutator: &mut DocumentMutator<'_>, id_map: &mut HashMap<usize, usize
                 mutator.remove_and_drop_node(blitz_id);
             }
         }
-        DomOp::SetAttribute { node, name, value } => {
-            if let Some(&blitz_id) = id_map.get(node) {
-                mutator.set_attribute(blitz_id, attr_qname(name), value);
-            }
-        }
-        DomOp::SetAttributes { node, attrs } => {
+        DomOp::ReplaceAttributes { node, attrs } => {
+            // 全量替换：覆写新属性列表中的每个属性。
+            // TODO(Phase 2)：先清除节点上不在新列表中的旧属性。
             if let Some(&blitz_id) = id_map.get(node) {
                 for (name, value) in attrs {
-                    mutator.set_attribute(blitz_id, attr_qname(name), value);
+                    mutator.set_attribute(blitz_id, attr_qname(&name), &value);
                 }
-            }
-        }
-        DomOp::RemoveAttribute { node, name } => {
-            if let Some(&blitz_id) = id_map.get(node) {
-                mutator.clear_attribute(blitz_id, attr_qname(name));
             }
         }
         DomOp::SetTextContent { node, content } => {

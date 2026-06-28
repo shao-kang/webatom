@@ -26,6 +26,8 @@ declare module "webatom_ext_native:dom" {
     replaceChild(parent: NodeHandle, newNode: NodeHandle, old: NodeHandle): void;
     documentNode(): NodeHandle;
     documentElement(): NodeHandle | null;
+    body(): NodeHandle | null;
+    head(): NodeHandle | null;
     createElement(tagName: string): NodeHandle;
     createComment(data: string): NodeHandle;
     createTextNode(data: string): NodeHandle;

@@ -8,7 +8,10 @@ name = "webatom-blitz"
 path = "src/main.rs"
 
 [dependencies]
-webatom-blitz-msg = { workspace = true }
+webatom-blitz-msg       = { workspace = true }
+webatom-js-runtime      = { workspace = true }
+webatom_extension_dom   = { workspace = true }
+tokio                   = { workspace = true }
 #winit             = { workspace = true }
 crossbeam-channel = "0.5"
 blitz = {git = "https://github.com/DioxusLabs/blitz.git", rev = "be8fbf9798e9e6e128f6c424539254f0349deb69" }
@@ -18,3 +21,4 @@ blitz-shell = {git = "https://github.com/DioxusLabs/blitz.git", rev = "be8fbf979
 anyrender_vello = { version = "0.11.0" }
 winit = { version = "=0.31.0-beta.2" }
 markup5ever = "0.39.0"
+tracing-subscriber = { workspace = true }

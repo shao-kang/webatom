@@ -3,6 +3,9 @@ import { defineConfig } from 'rolldown';
 
 export default defineConfig({
   input: 'src/window.ts',
+  alias: {
+    '@': './src',
+  },
   external: [
     /^webatom_ext_native:/
   ],
