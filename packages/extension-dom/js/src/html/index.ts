@@ -1,12 +1,15 @@
+import type { DocumentContext } from '@/interface/document-context';
+import type { NodeHandle } from '@/interface/native';
+import type { Node } from '@/interface/node';
 
-// Registry: nodeType number → factory function
 type NodeFactory = (ctx: DocumentContext, handle: NodeHandle) => Node;
 
 const nodeRegistry = new Map<number, NodeFactory>();
+
 export function registerNodeType(nodeType: number, factory: NodeFactory): void {
   nodeRegistry.set(nodeType, factory);
 }
 
-export const getNodeFactory = (nodeType: number) => {
+export function getNodeFactory(nodeType: number): NodeFactory | undefined {
   return nodeRegistry.get(nodeType);
 }

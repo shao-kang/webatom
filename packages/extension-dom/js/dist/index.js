@@ -68,12 +68,6 @@ var DOMEventTarget = class {
 	}
 };
 //#endregion
-//#region src/html/index.ts
-const nodeRegistry = /* @__PURE__ */ new Map();
-const getNodeFactory = (nodeType) => {
-	return nodeRegistry.get(nodeType);
-};
-//#endregion
 //#region src/interface/node.ts
 const NODE_CONSTANTS = {
 	ELEMENT_NODE: 1,
@@ -140,25 +134,20 @@ var Node = class Node extends DOMEventTarget {
 	static {
 		this.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = POSITION_CONSTANTS.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
 	}
-	get _docCtx() {
-		return document._docCtx;
-	}
-	constructor(handle) {
+	constructor(ctx, handle) {
 		super();
+		this._ctx = ctx;
 		this._handle = handle;
 	}
-	_wrap(h) {
-		return wrapHandleWith(this._docCtx, h);
-	}
 	get nodeType() {
-		return this._docCtx.nodeType(this._handle);
+		return this._ctx.nodeType(this._handle);
 	}
 	get nodeName() {
 		switch (this.nodeType) {
-			case Node.ELEMENT_NODE: return this._docCtx.tagName(this._handle)?.toUpperCase() ?? "";
+			case Node.ELEMENT_NODE: return this._ctx.tagName(this._handle)?.toUpperCase() ?? "";
 			case Node.TEXT_NODE: return "#text";
 			case Node.CDATA_SECTION_NODE: return "#cdata-section";
-			case Node.PROCESSING_INSTRUCTION_NODE: return this._docCtx.nodeValue(this._handle) ?? "";
+			case Node.PROCESSING_INSTRUCTION_NODE: return this._ctx.nodeValue(this._handle) ?? "";
 			case Node.COMMENT_NODE: return "#comment";
 			case Node.DOCUMENT_NODE: return "#document";
 			case Node.DOCUMENT_FRAGMENT_NODE: return "#document-fragment";
@@ -166,96 +155,93 @@ var Node = class Node extends DOMEventTarget {
 		}
 	}
 	get parentNode() {
-		return this._wrap(this._docCtx.parentNode(this._handle));
+		return this._ctx.parentNode(this._handle);
 	}
 	get parentElement() {
-		const h = this._docCtx.parentNode(this._handle);
-		if (!h) return null;
-		return this._docCtx.nodeType(h) === Node.ELEMENT_NODE ? this._wrap(h) : null;
+		const p = this._ctx.parentNode(this._handle);
+		return p?.nodeType === Node.ELEMENT_NODE ? p : null;
 	}
 	get firstChild() {
-		console.log("firstChild", this._handle, this._docCtx);
-		const node = this._docCtx.firstChild(this._handle);
-		console.log("firstChild end");
-		return node;
+		return this._ctx.firstChild(this._handle);
 	}
 	get lastChild() {
-		return this._docCtx.lastChild(this._handle);
+		return this._ctx.lastChild(this._handle);
 	}
 	get nextSibling() {
-		return this._docCtx.nextSibling(this._handle);
+		return this._ctx.nextSibling(this._handle);
 	}
 	get previousSibling() {
-		return this._docCtx.previousSibling(this._handle);
+		return this._ctx.previousSibling(this._handle);
 	}
 	get childNodes() {
 		const result = [];
-		let h = this._docCtx.firstChild(this._handle);
-		while (h) {
-			result.push(this._wrap(h));
-			h = this._docCtx.nextSibling(h);
+		let child = this._ctx.firstChild(this._handle);
+		while (child) {
+			result.push(child);
+			child = this._ctx.nextSibling(child._handle);
 		}
 		return result;
 	}
 	hasChildNodes() {
-		return this._docCtx.firstChild(this._handle) !== null;
+		return this._ctx.firstChild(this._handle) !== null;
 	}
 	get nodeValue() {
-		return this._docCtx.nodeValue(this._handle);
+		return this._ctx.nodeValue(this._handle);
 	}
 	set nodeValue(value) {
-		this._docCtx.setNodeValue(this._handle, value);
+		this._ctx.setNodeValue(this._handle, value);
 	}
 	get textContent() {
 		const t = this.nodeType;
 		if (t === Node.DOCUMENT_NODE || t === Node.DOCUMENT_TYPE_NODE) return null;
-		if (t === Node.TEXT_NODE || t === Node.CDATA_SECTION_NODE || t === Node.COMMENT_NODE || t === Node.PROCESSING_INSTRUCTION_NODE) return this._docCtx.nodeValue(this._handle);
+		if (t === Node.TEXT_NODE || t === Node.CDATA_SECTION_NODE || t === Node.COMMENT_NODE || t === Node.PROCESSING_INSTRUCTION_NODE) return this._ctx.nodeValue(this._handle);
 		return this._collectText(this._handle);
 	}
 	set textContent(value) {
-		let h = this._docCtx.firstChild(this._handle);
-		while (h) {
-			const next = this._docCtx.nextSibling(h);
-			this._docCtx.removeChild(this._handle, h);
-			const child = this._docCtx._handleNodeMap.get(h);
-			if (child) this._docCtx._nodes.delete(child);
-			h = next;
+		let child = this._ctx.firstChild(this._handle);
+		while (child) {
+			const next = this._ctx.nextSibling(child._handle);
+			this._ctx.removeChild(this._handle, child._handle);
+			this._ctx._nodes.delete(child);
+			child = next;
 		}
 		if (value) {
-			const text = this._docCtx.createTextNode(value);
-			this._docCtx.appendChild(this._handle, text);
+			const textHandle = this._ctx.createTextNode(value);
+			this._ctx.appendChild(this._handle, textHandle);
+			const textNode = this._ctx.wrap(textHandle);
+			this._ctx._nodes.add(textNode);
 		}
 	}
 	_collectText(h) {
 		let text = "";
-		let child = this._docCtx.firstChild(h);
+		let child = this._ctx.firstChild(h);
 		while (child) {
-			const t = this._docCtx.nodeType(child);
-			text += t === Node.TEXT_NODE || t === Node.CDATA_SECTION_NODE ? this._docCtx.nodeValue(child) ?? "" : this._collectText(child);
-			child = this._docCtx.nextSibling(child);
+			const t = child.nodeType;
+			text += t === Node.TEXT_NODE || t === Node.CDATA_SECTION_NODE ? child.nodeValue ?? "" : this._collectText(child._handle);
+			child = this._ctx.nextSibling(child._handle);
 		}
 		return text;
 	}
 	appendChild(node) {
-		this._docCtx.appendChild(this._handle, node._handle);
-		this._docCtx._nodes.add(node);
+		this._ctx.appendChild(this._handle, node._handle);
+		this._ctx._nodes.add(node);
 		return node;
 	}
 	removeChild(child) {
-		this._docCtx.removeChild(this._handle, child._handle);
-		this._docCtx._nodes.delete(child);
+		this._ctx.removeChild(this._handle, child._handle);
+		this._ctx._nodes.delete(child);
 		return child;
 	}
 	insertBefore(node, refChild) {
-		if (refChild === null) this._docCtx.appendChild(this._handle, node._handle);
-		else this._docCtx.insertBefore(this._handle, node._handle, refChild._handle);
-		this._docCtx._nodes.add(node);
+		if (refChild === null) this._ctx.appendChild(this._handle, node._handle);
+		else this._ctx.insertBefore(this._handle, node._handle, refChild._handle);
+		this._ctx._nodes.add(node);
 		return node;
 	}
 	replaceChild(node, child) {
-		this._docCtx.replaceChild(this._handle, node._handle, child._handle);
-		this._docCtx._nodes.add(node);
-		this._docCtx._nodes.delete(child);
+		this._ctx.replaceChild(this._handle, node._handle, child._handle);
+		this._ctx._nodes.add(node);
+		this._ctx._nodes.delete(child);
 		return child;
 	}
 	getRootNode(_options) {
@@ -339,25 +325,32 @@ for (const [key, value] of [...Object.entries(NODE_CONSTANTS), ...Object.entries
 	enumerable: true,
 	configurable: false
 });
-function wrapHandleWith(ctx, handle) {
-	if (!handle) return null;
-	const existing = ctx._handleNodeMap.get(handle);
-	if (existing) return existing;
-	const factory = getNodeFactory(ctx.nodeType(handle));
-	const node = factory ? factory(ctx, handle) : new Node(handle);
-	ctx._handleNodeMap.set(handle, node);
-	return node;
+//#endregion
+//#region src/html/index.ts
+const nodeRegistry = /* @__PURE__ */ new Map();
+function registerNodeType(nodeType, factory) {
+	nodeRegistry.set(nodeType, factory);
+}
+function getNodeFactory(nodeType) {
+	return nodeRegistry.get(nodeType);
 }
 //#endregion
 //#region src/interface/document-context.ts
 var DocumentContext = class {
+	wrap(handle) {
+		if (!handle) return null;
+		const existing = this._handleNodeMap.get(handle);
+		if (existing) return existing;
+		const factory = getNodeFactory(this._docHandle.nodeType(handle));
+		const node = factory ? factory(this, handle) : new Node(this, handle);
+		this._handleNodeMap.set(handle, node);
+		if (this._docHandle.parentNode(handle) !== null) this._nodes.add(node);
+		return node;
+	}
 	constructor() {
 		this._nodes = /* @__PURE__ */ new Set();
 		this._handleNodeMap = /* @__PURE__ */ new WeakMap();
 		this._docHandle = new DocumentHandle();
-	}
-	getNode(node) {
-		return this._handleNodeMap.get(node);
 	}
 	nodeType(node) {
 		return this._docHandle.nodeType(node);
@@ -371,27 +364,44 @@ var DocumentContext = class {
 	setNodeValue(node, value) {
 		this._docHandle.setNodeValue(node, value);
 	}
+	getAttribute(node, name) {
+		return this._docHandle.getAttribute(node, name);
+	}
+	setAttribute(node, name, value) {
+		this._docHandle.setAttribute(node, name, value);
+	}
+	removeAttribute(node, name) {
+		this._docHandle.removeAttribute(node, name);
+	}
+	hasAttribute(node, name) {
+		return this._docHandle.hasAttribute(node, name);
+	}
+	attributes(node) {
+		return this._docHandle.attributes(node);
+	}
 	parentNode(node) {
-		const handle = this._docHandle.parentNode(node);
-		return handle ? this.getNode(handle) : null;
+		return this.wrap(this._docHandle.parentNode(node));
 	}
 	firstChild(node) {
-		console.log("contextstart");
-		const handle = this._docHandle.firstChild(node);
-		console.log("context", handle);
-		return handle ? this.getNode(handle) : null;
+		return this.wrap(this._docHandle.firstChild(node));
 	}
 	lastChild(node) {
-		const handle = this._docHandle.lastChild(node);
-		return handle ? this.getNode(handle) : null;
+		return this.wrap(this._docHandle.lastChild(node));
 	}
 	nextSibling(node) {
-		const handle = this._docHandle.nextSibling(node);
-		return handle ? this.getNode(handle) : null;
+		return this.wrap(this._docHandle.nextSibling(node));
 	}
 	previousSibling(node) {
-		const handle = this._docHandle.previousSibling(node);
-		return handle ? this.getNode(handle) : null;
+		return this.wrap(this._docHandle.previousSibling(node));
+	}
+	documentElement() {
+		return this.wrap(this._docHandle.documentElement());
+	}
+	body() {
+		return this.wrap(this._docHandle.body());
+	}
+	head() {
+		return this.wrap(this._docHandle.head());
 	}
 	appendChild(parent, child) {
 		this._docHandle.appendChild(parent, child);
@@ -417,85 +427,245 @@ var DocumentContext = class {
 	documentNode() {
 		return this._docHandle.documentNode();
 	}
-	documentElement() {
-		return this._docHandle.documentElement();
-	}
-	body() {
-		return this._docHandle.body();
-	}
-	head() {
-		return this._docHandle.head();
-	}
-	getAttribute(node, name) {
-		return this._docHandle.getAttribute(node, name);
-	}
-	setAttribute(node, name, value) {
-		this._docHandle.setAttribute(node, name, value);
-	}
-	removeAttribute(node, name) {
-		this._docHandle.removeAttribute(node, name);
-	}
-	hasAttribute(node, name) {
-		return this._docHandle.hasAttribute(node, name);
-	}
-	attributes(node) {
-		return this._docHandle.attributes(node);
-	}
 };
 //#endregion
 //#region src/interface/document.ts
-const documentHandle = new DocumentHandle();
 var Document = class extends Node {
-	static {
-		this.handle = documentHandle;
-	}
 	constructor() {
-		super();
-		this.text = "xxx";
-		this._ctx = new DocumentContext();
-	}
-	get _docCtx() {
-		return this._ctx;
+		const ctx = new DocumentContext();
+		const docNode = ctx.documentNode();
+		super(ctx, docNode);
+		ctx._handleNodeMap.set(docNode, this);
+		ctx._nodes.add(this);
 	}
 	get ownerDocument() {
 		return null;
 	}
 	get documentElement() {
-		return this._wrap(this._docCtx.documentElement());
+		return this._ctx.documentElement();
 	}
 	get body() {
-		return this._wrap(this._docCtx.body());
+		return this._ctx.body();
 	}
 	get head() {
-		return this._wrap(this._docCtx.head());
-	}
-	#createElementWithHandle(tagName, handle) {
-		const node = new Node(handle);
-		this._ctx._handleNodeMap.set(handle, node);
-		return node;
+		return this._ctx.head();
 	}
 	createElement(tagName) {
-		const handle = this._docCtx.createElement(tagName);
-		return this.#createElementWithHandle(tagName, handle);
-	}
-	tagName(node) {
-		console.log("tagNameNode", node);
-		console.log("tagNameNode", node._handle);
-		return this._docCtx.tagName(node._handle);
+		return this._ctx.wrap(this._ctx.createElement(tagName));
 	}
 	createTextNode(data) {
-		return this.#createElementWithHandle("text", this._docCtx.createTextNode(data));
+		return this._ctx.wrap(this._ctx.createTextNode(data));
 	}
 	createComment(data) {
-		return this.#createElementWithHandle("comment", this._docCtx.createComment(data));
+		return this._ctx.wrap(this._ctx.createComment(data));
+	}
+	getElementById(id) {
+		return this._findById(this._ctx._docHandle.firstChild(this._handle), id);
+	}
+	_findById(h, id) {
+		while (h) {
+			if (this._ctx.nodeType(h) === Node.ELEMENT_NODE) {
+				if (this._ctx.getAttribute(h, "id") === id) return this._ctx.wrap(h);
+				const found = this._findById(this._ctx._docHandle.firstChild(h), id);
+				if (found) return found;
+			}
+			h = this._ctx._docHandle.nextSibling(h);
+		}
+		return null;
 	}
 };
+//#endregion
+//#region src/interface/element.ts
+var DOMTokenList = class {
+	constructor(el) {
+		this._el = el;
+	}
+	_tokens() {
+		return this._el.className.split(/\s+/).filter(Boolean);
+	}
+	get length() {
+		return this._tokens().length;
+	}
+	item(index) {
+		return this._tokens()[index] ?? null;
+	}
+	contains(token) {
+		return this._tokens().includes(token);
+	}
+	add(...tokens) {
+		const set = new Set(this._tokens());
+		for (const t of tokens) set.add(t);
+		this._el.className = [...set].join(" ");
+	}
+	remove(...tokens) {
+		const set = new Set(this._tokens());
+		for (const t of tokens) set.delete(t);
+		this._el.className = [...set].join(" ");
+	}
+	toggle(token, force) {
+		const has = this.contains(token);
+		if (force === void 0 ? has : force) {
+			this.remove(token);
+			return false;
+		} else {
+			this.add(token);
+			return true;
+		}
+	}
+	replace(oldToken, newToken) {
+		if (!this.contains(oldToken)) return false;
+		this.remove(oldToken);
+		this.add(newToken);
+		return true;
+	}
+	toString() {
+		return this._el.className;
+	}
+	[Symbol.iterator]() {
+		return this._tokens()[Symbol.iterator]();
+	}
+};
+var Element = class extends Node {
+	constructor(ctx, handle) {
+		super(ctx, handle);
+		this._classList = new DOMTokenList(this);
+	}
+	get tagName() {
+		return this._ctx.tagName(this._handle)?.toUpperCase() ?? "";
+	}
+	get localName() {
+		return this._ctx.tagName(this._handle)?.toLowerCase() ?? "";
+	}
+	getAttribute(name) {
+		return this._ctx.getAttribute(this._handle, name);
+	}
+	setAttribute(name, value) {
+		this._ctx.setAttribute(this._handle, name, value);
+	}
+	removeAttribute(name) {
+		this._ctx.removeAttribute(this._handle, name);
+	}
+	hasAttribute(name) {
+		return this._ctx.hasAttribute(this._handle, name);
+	}
+	getAttributeNames() {
+		return this._ctx.attributes(this._handle).map(([name]) => name);
+	}
+	toggleAttribute(name, force) {
+		const has = this.hasAttribute(name);
+		if (force === void 0 ? has : force) {
+			this.removeAttribute(name);
+			return false;
+		} else {
+			this.setAttribute(name, "");
+			return true;
+		}
+	}
+	get id() {
+		return this.getAttribute("id") ?? "";
+	}
+	set id(value) {
+		this.setAttribute("id", value);
+	}
+	get className() {
+		return this.getAttribute("class") ?? "";
+	}
+	set className(value) {
+		this.setAttribute("class", value);
+	}
+	get classList() {
+		return this._classList;
+	}
+	get children() {
+		const result = [];
+		let child = this._ctx.firstChild(this._handle);
+		while (child) {
+			if (child.nodeType === Node.ELEMENT_NODE) result.push(child);
+			child = this._ctx.nextSibling(child._handle);
+		}
+		return result;
+	}
+	get childElementCount() {
+		return this.children.length;
+	}
+	get firstElementChild() {
+		let child = this._ctx.firstChild(this._handle);
+		while (child) {
+			if (child.nodeType === Node.ELEMENT_NODE) return child;
+			child = this._ctx.nextSibling(child._handle);
+		}
+		return null;
+	}
+	get lastElementChild() {
+		let child = this._ctx.lastChild(this._handle);
+		while (child) {
+			if (child.nodeType === Node.ELEMENT_NODE) return child;
+			child = this._ctx.previousSibling(child._handle);
+		}
+		return null;
+	}
+	get nextElementSibling() {
+		let sib = this._ctx.nextSibling(this._handle);
+		while (sib) {
+			if (sib.nodeType === Node.ELEMENT_NODE) return sib;
+			sib = this._ctx.nextSibling(sib._handle);
+		}
+		return null;
+	}
+	get previousElementSibling() {
+		let sib = this._ctx.previousSibling(this._handle);
+		while (sib) {
+			if (sib.nodeType === Node.ELEMENT_NODE) return sib;
+			sib = this._ctx.previousSibling(sib._handle);
+		}
+		return null;
+	}
+	append(...nodes) {
+		for (const n of nodes) if (typeof n === "string") {
+			const handle = this._ctx.createTextNode(n);
+			this._ctx.appendChild(this._handle, handle);
+			this._ctx._nodes.add(this._ctx.wrap(handle));
+		} else this.appendChild(n);
+	}
+	prepend(...nodes) {
+		const ref = this._ctx.firstChild(this._handle);
+		for (const n of nodes) if (typeof n === "string") {
+			const handle = this._ctx.createTextNode(n);
+			if (ref) this._ctx.insertBefore(this._handle, handle, ref._handle);
+			else this._ctx.appendChild(this._handle, handle);
+			this._ctx._nodes.add(this._ctx.wrap(handle));
+		} else if (ref) this.insertBefore(n, ref);
+		else this.appendChild(n);
+	}
+	remove() {
+		const parent = this._ctx.parentNode(this._handle);
+		if (parent) parent.removeChild(this);
+	}
+	replaceWith(...nodes) {
+		const parent = this._ctx.parentNode(this._handle);
+		if (!parent) return;
+		for (const n of nodes) if (typeof n === "string") {
+			const handle = this._ctx.createTextNode(n);
+			this._ctx.insertBefore(parent._handle, handle, this._handle);
+			this._ctx._nodes.add(this._ctx.wrap(handle));
+		} else {
+			this._ctx.insertBefore(parent._handle, n._handle, this._handle);
+			this._ctx._nodes.add(n);
+		}
+		parent.removeChild(this);
+	}
+	get style() {
+		return { getPropertyValue: () => "" };
+	}
+};
+registerNodeType(Node.ELEMENT_NODE, (ctx, handle) => new Element(ctx, handle));
 //#endregion
 //#region src/window.ts
 const windowDefs = {
 	Document,
 	document: new Document(),
 	Node,
+	Element,
 	location: {
 		href: "",
 		hostname: "",

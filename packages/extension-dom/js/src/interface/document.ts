@@ -1,31 +1,18 @@
 // https://dom.spec.whatwg.org/#document
 
-import {
-  Node,
-  wrapHandleWith,
-  // registerNodeType,
-} from './node.js';
-
-import { DocumentHandle, NodeHandle } from './native';
-
-import {DocumentContext} from './document-context.js'
-
-const documentHandle = new DocumentHandle();
-
+import { Node } from './node';
+import type { NodeHandle } from './native';
+import { DocumentContext } from './document-context';
 
 export class Document extends Node {
-    static readonly handle = documentHandle;
-  
-    _ctx: DocumentContext
-    text = 'xxx'
-
-    constructor() {
-        super()
-        this._ctx = new DocumentContext();
-    }
-    get _docCtx(): DocumentContext {
-        return this._ctx
-    }
+  constructor() {
+    const ctx = new DocumentContext();
+    const docNode = ctx.documentNode();
+    super(ctx, docNode);
+    // Register the document node so wrapHandleWith returns this instance
+    ctx._handleNodeMap.set(docNode, this);
+    ctx._nodes.add(this);
+  }
 
   override get ownerDocument(): null {
     return null;
@@ -34,67 +21,48 @@ export class Document extends Node {
   // ── Document tree ────────────────────────────────────────────────────────
 
   get documentElement(): Node | null {
-    return this._wrap(this._docCtx.documentElement());
+    return this._ctx.documentElement();
   }
+
   get body(): Node | null {
-    return this._wrap(this._docCtx.body());
+    return this._ctx.body();
   }
 
   get head(): Node | null {
-    return this._wrap(this._docCtx.head());
-  }
-
-  #createElementWithHandle(tagName: string, handle: NodeHandle ) {
-    const node =  new Node(handle,);
-    this._ctx._handleNodeMap.set(handle, node)
-    return node
-
+    return this._ctx.head();
   }
 
   // ── Node creation ────────────────────────────────────────────────────────
 
   createElement(tagName: string): Node {
-    const handle = this._docCtx.createElement(tagName)
-    return this.#createElementWithHandle(tagName, handle)!;
+    return this._ctx.wrap(this._ctx.createElement(tagName))!;
   }
-  tagName(node: Node): string {
-    console.log('tagNameNode', node)
-    console.log('tagNameNode', node._handle!)
-    return this._docCtx.tagName(node._handle!)!
-  }
-  // nodeType(node: Node):string {
-  //   return this._docCtx.nodeType(node._handle!)
-  // }
 
   createTextNode(data: string): Node {
-    return this.#createElementWithHandle('text', this._docCtx.createTextNode(data))!;
+    return this._ctx.wrap(this._ctx.createTextNode(data))!;
   }
 
   createComment(data: string): Node {
-    return this.#createElementWithHandle('comment', this._docCtx.createComment(data))!;
+    return this._ctx.wrap(this._ctx.createComment(data))!;
   }
 
   // ── Query ────────────────────────────────────────────────────────────────
 
-//   getElementById(id: string): Node | null {
-//     return this._findById(this._docCtx.firstChild(this._handle), id);
-//   }
+  getElementById(id: string): Node | null {
+    return this._findById(this._ctx._docHandle.firstChild(this._handle), id);
+  }
 
-//   private _findById(h: NodeHandle | null, id: string): Node | null {
-//     while (h) {
-//       if (this._docCtx.nodeType(h) === Node.ELEMENT_NODE) {
-//         if (this._docCtx.getAttribute(h, 'id') === id) {
-//           return this._wrap(h);
-//         }
-//         const found = this._findById(this._docCtx.firstChild(h), id);
-//         if (found) return found;
-//       }
-//       h = this._docCtx.nextSibling(h);
-//     }
-//     return null;
-//   }
+  private _findById(h: NodeHandle | null, id: string): Node | null {
+    while (h) {
+      if (this._ctx.nodeType(h) === Node.ELEMENT_NODE) {
+        if (this._ctx.getAttribute(h, 'id') === id) {
+          return this._ctx.wrap(h);
+        }
+        const found = this._findById(this._ctx._docHandle.firstChild(h), id);
+        if (found) return found;
+      }
+      h = this._ctx._docHandle.nextSibling(h);
+    }
+    return null;
+  }
 }
-
-// registerNodeType(Node.DOCUMENT_NODE, () => {
-//   throw new DOMException('Document nodes must be constructed directly', 'NotSupportedError');
-// });

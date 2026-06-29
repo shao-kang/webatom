@@ -1,5 +1,6 @@
 import { Document } from './interface/document';
 import { Node } from './interface/node';
+import { Element } from './interface/element';
 
 // import { Event } from './interface/event_target';
 
@@ -62,9 +63,8 @@ const screen = {
 // ── Window object ─────────────────────────────────────────────────────────
 
 const windowDefs: Record<string, unknown> = {
-  Document,
+
   document: new Document(),
-  Node,
   location,
   navigator,
   history,

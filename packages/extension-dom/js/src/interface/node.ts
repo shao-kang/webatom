@@ -1,16 +1,9 @@
 // https://dom.spec.whatwg.org/#node
 
 import { EventTarget } from './event-target';
-export { NodeHandle } from './native';
+export type { NodeHandle } from './native';
 import type { NodeHandle } from './native';
 import type { DocumentContext } from './document-context';
-
-import { getNodeFactory } from '@/html/index';
-
-
-
-
-
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -50,38 +43,31 @@ class Node extends EventTarget {
   static readonly DOCUMENT_POSITION_DISCONNECTED            = POSITION_CONSTANTS.DOCUMENT_POSITION_DISCONNECTED;
   static readonly DOCUMENT_POSITION_PRECEDING               = POSITION_CONSTANTS.DOCUMENT_POSITION_PRECEDING;
   static readonly DOCUMENT_POSITION_FOLLOWING               = POSITION_CONSTANTS.DOCUMENT_POSITION_FOLLOWING;
-  static readonly DOCUMENT_POSITION_CONTAINS               = POSITION_CONSTANTS.DOCUMENT_POSITION_CONTAINS;
-  static readonly DOCUMENT_POSITION_CONTAINED_BY           = POSITION_CONSTANTS.DOCUMENT_POSITION_CONTAINED_BY;
+  static readonly DOCUMENT_POSITION_CONTAINS                = POSITION_CONSTANTS.DOCUMENT_POSITION_CONTAINS;
+  static readonly DOCUMENT_POSITION_CONTAINED_BY            = POSITION_CONSTANTS.DOCUMENT_POSITION_CONTAINED_BY;
   static readonly DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = POSITION_CONSTANTS.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
 
+  _ctx: DocumentContext;
   _handle: NodeHandle;
-  // _docCtx?: DocumentContext;
-  get _docCtx(): DocumentContext {
-    // @ts-expect-error yuji
-    return document._docCtx
-  }
 
-  constructor( handle: NodeHandle) {
+  constructor(ctx: DocumentContext, handle: NodeHandle) {
     super();
+    this._ctx = ctx;
     this._handle = handle;
-  }
-
-  protected _wrap(h: NodeHandle | null): Node | null {
-    return wrapHandleWith(this._docCtx, h);
   }
 
   // ── nodeType / nodeName ──────────────────────────────────────────────────
 
   get nodeType(): number {
-    return this._docCtx.nodeType(this._handle!);
+    return this._ctx.nodeType(this._handle);
   }
 
   get nodeName(): string {
     switch (this.nodeType) {
-      case Node.ELEMENT_NODE:                return this._docCtx.tagName(this._handle!)?.toUpperCase() ?? '';
+      case Node.ELEMENT_NODE:                return this._ctx.tagName(this._handle)?.toUpperCase() ?? '';
       case Node.TEXT_NODE:                   return '#text';
       case Node.CDATA_SECTION_NODE:          return '#cdata-section';
-      case Node.PROCESSING_INSTRUCTION_NODE: return this._docCtx.nodeValue(this._handle!) ?? '';
+      case Node.PROCESSING_INSTRUCTION_NODE: return this._ctx.nodeValue(this._handle) ?? '';
       case Node.COMMENT_NODE:                return '#comment';
       case Node.DOCUMENT_NODE:               return '#document';
       case Node.DOCUMENT_FRAGMENT_NODE:      return '#document-fragment';
@@ -91,55 +77,40 @@ class Node extends EventTarget {
 
   // ── Tree traversal ───────────────────────────────────────────────────────
 
-  get parentNode(): Node | null {
-    return this._wrap(this._docCtx.parentNode(this._handle));
-  }
-
+  get parentNode(): Node | null      { return this._ctx.parentNode(this._handle); }
   get parentElement(): Node | null {
-    const h = this._docCtx.parentNode(this._handle);
-    if (!h) return null;
-    return this._docCtx.nodeType(h) === Node.ELEMENT_NODE ? this._wrap(h) : null;
+    const p = this._ctx.parentNode(this._handle);
+    return p?.nodeType === Node.ELEMENT_NODE ? p : null;
   }
-
-  get firstChild(): Node | null      { 
-    console.log('firstChild', this._handle, this._docCtx)
-    const node = this._docCtx.firstChild(this._handle!)
-    console.log('firstChild end')
-    return node 
-  }
-  get lastChild(): Node | null       { 
-    return this._docCtx.lastChild(this._handle!); 
-  }
-  get nextSibling(): Node | null     { 
-    return this._docCtx.nextSibling(this._handle!); }
-  get previousSibling(): Node | null { 
-    return this._docCtx.previousSibling(this._handle!); 
-  }
+  get firstChild(): Node | null      { return this._ctx.firstChild(this._handle); }
+  get lastChild(): Node | null       { return this._ctx.lastChild(this._handle); }
+  get nextSibling(): Node | null     { return this._ctx.nextSibling(this._handle); }
+  get previousSibling(): Node | null { return this._ctx.previousSibling(this._handle); }
 
   // ── Child list ───────────────────────────────────────────────────────────
 
   get childNodes(): Node[] {
     const result: Node[] = [];
-    let h = this._docCtx.firstChild(this._handle);
-    while (h) {
-      result.push(this._wrap(h)!);
-      h = this._docCtx.nextSibling(h);
+    let child = this._ctx.firstChild(this._handle);
+    while (child) {
+      result.push(child);
+      child = this._ctx.nextSibling(child._handle);
     }
     return result;
   }
 
   hasChildNodes(): boolean {
-    return this._docCtx.firstChild(this._handle) !== null;
+    return this._ctx.firstChild(this._handle) !== null;
   }
 
   // ── nodeValue / textContent ──────────────────────────────────────────────
 
   get nodeValue(): string | null {
-    return this._docCtx.nodeValue(this._handle);
+    return this._ctx.nodeValue(this._handle);
   }
 
   set nodeValue(value: string | null) {
-    this._docCtx.setNodeValue(this._handle, value);
+    this._ctx.setNodeValue(this._handle, value);
   }
 
   get textContent(): string | null {
@@ -147,35 +118,36 @@ class Node extends EventTarget {
     if (t === Node.DOCUMENT_NODE || t === Node.DOCUMENT_TYPE_NODE) return null;
     if (t === Node.TEXT_NODE || t === Node.CDATA_SECTION_NODE ||
         t === Node.COMMENT_NODE || t === Node.PROCESSING_INSTRUCTION_NODE) {
-      return this._docCtx.nodeValue(this._handle);
+      return this._ctx.nodeValue(this._handle);
     }
     return this._collectText(this._handle);
   }
 
   set textContent(value: string | null) {
-    let h = this._docCtx.firstChild(this._handle);
-    while (h) {
-      const next = this._docCtx.nextSibling(h);
-      this._docCtx.removeChild(this._handle, h);
-      const child = this._docCtx._handleNodeMap.get(h);
-      if (child) this._docCtx._nodes.delete(child);
-      h = next;
+    let child = this._ctx.firstChild(this._handle);
+    while (child) {
+      const next = this._ctx.nextSibling(child._handle);
+      this._ctx.removeChild(this._handle, child._handle);
+      this._ctx._nodes.delete(child);
+      child = next;
     }
     if (value) {
-      const text = this._docCtx.createTextNode(value);
-      this._docCtx.appendChild(this._handle, text);
+      const textHandle = this._ctx.createTextNode(value);
+      this._ctx.appendChild(this._handle, textHandle);
+      const textNode = this._ctx.wrap(textHandle)!;
+      this._ctx._nodes.add(textNode);
     }
   }
 
   private _collectText(h: NodeHandle): string {
     let text = '';
-    let child = this._docCtx.firstChild(h);
+    let child = this._ctx.firstChild(h);
     while (child) {
-      const t = this._docCtx.nodeType(child);
+      const t = child.nodeType;
       text += (t === Node.TEXT_NODE || t === Node.CDATA_SECTION_NODE)
-        ? (this._docCtx.nodeValue(child) ?? '')
-        : this._collectText(child);
-      child = this._docCtx.nextSibling(child);
+        ? (child.nodeValue ?? '')
+        : this._collectText(child._handle);
+      child = this._ctx.nextSibling(child._handle);
     }
     return text;
   }
@@ -183,31 +155,31 @@ class Node extends EventTarget {
   // ── Tree mutation ────────────────────────────────────────────────────────
 
   appendChild<T extends Node>(node: T): T {
-    this._docCtx.appendChild(this._handle, node._handle);
-    this._docCtx._nodes.add(node);
+    this._ctx.appendChild(this._handle, node._handle);
+    this._ctx._nodes.add(node);
     return node;
   }
 
   removeChild<T extends Node>(child: T): T {
-    this._docCtx.removeChild(this._handle, child._handle);
-    this._docCtx._nodes.delete(child);
+    this._ctx.removeChild(this._handle, child._handle);
+    this._ctx._nodes.delete(child);
     return child;
   }
 
   insertBefore<T extends Node>(node: T, refChild: Node | null): T {
     if (refChild === null) {
-      this._docCtx.appendChild(this._handle, node._handle);
+      this._ctx.appendChild(this._handle, node._handle);
     } else {
-      this._docCtx.insertBefore(this._handle, node._handle, refChild._handle);
+      this._ctx.insertBefore(this._handle, node._handle, refChild._handle);
     }
-    this._docCtx._nodes.add(node);
+    this._ctx._nodes.add(node);
     return node;
   }
 
   replaceChild<T extends Node>(node: Node, child: T): T {
-    this._docCtx.replaceChild(this._handle, node._handle, child._handle);
-    this._docCtx._nodes.add(node);
-    this._docCtx._nodes.delete(child);
+    this._ctx.replaceChild(this._handle, node._handle, child._handle);
+    this._ctx._nodes.add(node);
+    this._ctx._nodes.delete(child);
     return child;
   }
 
@@ -287,20 +259,8 @@ class Node extends EventTarget {
   get baseURI(): string { return ''; }
 }
 
-// Copy constants to prototype for instance access (node.ELEMENT_NODE works)
 for (const [key, value] of [...Object.entries(NODE_CONSTANTS), ...Object.entries(POSITION_CONSTANTS)]) {
   Object.defineProperty(Node.prototype, key, { value, writable: false, enumerable: true, configurable: false });
 }
 
 export { Node };
-// Wrap a NodeHandle into the correct Node subclass, reusing existing instances.
-export function wrapHandleWith(ctx: DocumentContext, handle: NodeHandle | null): Node | null {
-  if (!handle) return null;
-  const existing = ctx._handleNodeMap.get(handle);
-  if (existing) return existing;
-  const type = ctx.nodeType(handle);
-  const factory = getNodeFactory(type);
-  const node = factory ? factory(ctx, handle) : new Node(handle);
-  ctx._handleNodeMap.set(handle, node);
-  return node;
-}

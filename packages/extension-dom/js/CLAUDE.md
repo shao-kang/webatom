@@ -9,101 +9,237 @@
 
 ## 两个底层原语
 
-通过 `import { DocumentHandle, NodeHandle } from './native'` 引入（native 模块由 Rust 注册）。
+通过 `import { DocumentHandle, NodeHandle } from 'webatom_ext_native:dom'` 引入（native 模块由 Rust 注册）。
 
 ### NodeHandle（节点句柄）
 
 - 对应 Rust 侧一个具体节点，完全不透明
 - **不暴露任何属性或方法**，仅作为 token 传入 `DocumentHandle` 的方法以定位节点
-- 由 QuickJS GC 管理生命周期
+- 由 QuickJS GC 管理生命周期；Drop 时 Rust 侧可直接回收对应节点（若已脱离树）
 
 ### DocumentHandle（文档门面）
 
-- 持有 Rust 侧 `Document`（Slab）的引用
+- 持有 Rust 侧 `Document`（Slab/SlotMap）的引用
 - 所有节点操作（创建、查询、树变更、属性读写）均为其实例方法，接受 `NodeHandle` 参数定位节点
-- 每个节点在 `DocumentHandle` 内部有唯一对应的 `NodeHandle`（`get_or_create` 缓存）
+- **由 `DocumentContext` 创建并持有**，外部代码不直接 `new DocumentHandle()`
 
 ---
 
-## DocumentContext 接口（document.ts）
+## DocumentContext 桥接层（document-context.ts）
 
-`DocumentContext` 定义在 `document.ts`，由 `Document.#docCtx` 实现：
+`DocumentContext` 是一个 **bridge class**，同时承担三个职责：
+
+1. **创建并持有** `DocumentHandle`（整个文档唯一一个）
+2. 将 `_docHandle` 的 `NodeHandle` 级别原语**封装为 `Node` 级别**的桥接方法
+3. 持有 `_nodes`（保活 Set）和 `_handleNodeMap`（handle → Node 实例缓存）
 
 ```ts
-export interface DocumentContext {
+// src/interface/document-context.ts
+import { DocumentHandle, NodeHandle } from './native';
+import { Node, wrapHandleWith } from './node';  // 运行时单向导入
+
+export class DocumentContext {
   readonly _docHandle: DocumentHandle;
-  readonly _nodes: Set<Node>;
-  readonly _handleNodeMap: WeakMap<NodeHandle, Node>;
-}
-```
+  readonly _nodes: Set<Node> = new Set();
+  readonly _handleNodeMap: WeakMap<NodeHandle, Node> = new WeakMap();
 
-- `_docHandle`：DocumentHandle 实例，所有节点操作的入口
-- `_nodes`：强引用 Set，保活所有仍在 DOM 树中的 Node 实例，防止 GC 回收
-- `_handleNodeMap`：WeakMap，从 NodeHandle → Node 实例，保证同一底层节点始终复用同一 JS 对象
-
-`node.ts` 通过 `import type { DocumentContext } from './document'` 引入此接口（纯类型导入，运行时无循环）。
-
----
-
-## Document.#docCtx 模式
-
-`Document` 在构造时创建一个实现 `DocumentContext` 的普通对象，存入私有字段 `#docCtx`，并将其作为 `ctx` 传给 `super()`：
-
-```ts
-export class Document extends Node {
-  #docCtx: DocumentContext;
-
-  constructor(docHandle: DocumentHandle) {
-    const docNode = docHandle.documentNode();
-    const docCtx: DocumentContext = {
-      _docHandle: docHandle,
-      _nodes: new Set(),
-      _handleNodeMap: new WeakMap(),
-    };
-    super(docCtx, docNode);   // Node._ctx = docCtx（永不为 null）
-    this.#docCtx = docCtx;
-    docCtx._handleNodeMap.set(docNode, this);
-    docCtx._nodes.add(this);
+  constructor() {
+    this._docHandle = new DocumentHandle();  // 唯一一次 new DocumentHandle()
   }
 }
 ```
 
-- 所有通过此 Document 创建/包装的子节点，`_ctx` 都指向同一个 `docCtx` 对象
-- 子节点通过 `this._ctx._docHandle` 执行所有 Rust 侧操作，无需持有 `DocumentHandle` 本身
+### 方法职责划分
+
+| 方法类型 | 入参 | 返回值 | 说明 |
+|---------|------|--------|------|
+| 标量查询 | `NodeHandle` | 基础类型 | 直接透传 `_docHandle`，无包装 |
+| 树遍历 | `NodeHandle` | `Node \| null` | 调用 `_docHandle` + `wrapHandleWith` 包装 |
+| 文档结构查询 | — | `Node \| null` | `documentElement / body / head`，同上 |
+| 树变更 | `NodeHandle, NodeHandle` | `void` | 直接透传，`_nodes` 由上层 Node 方法维护 |
+| 节点创建 | — | `NodeHandle` | 返回原始句柄（游离，不进 `_nodes`） |
+| Bootstrap | — | `NodeHandle` | `documentNode()`，仅供 `Document` 构造使用 |
+
+### 完整方法签名
+
+```ts
+class DocumentContext {
+  // 标量查询
+  nodeType(node: NodeHandle): number
+  tagName(node: NodeHandle): string | null
+  nodeValue(node: NodeHandle): string | null
+  setNodeValue(node: NodeHandle, value: string | null): void
+  getAttribute(node: NodeHandle, name: string): string | null
+  setAttribute(node: NodeHandle, name: string, value: string): void
+  removeAttribute(node: NodeHandle, name: string): void
+  hasAttribute(node: NodeHandle, name: string): boolean
+  attributes(node: NodeHandle): [string, string][]
+
+  // 树遍历（内部调用 wrapHandleWith，返回 Node | null）
+  parentNode(node: NodeHandle): Node | null
+  firstChild(node: NodeHandle): Node | null
+  lastChild(node: NodeHandle): Node | null
+  nextSibling(node: NodeHandle): Node | null
+  previousSibling(node: NodeHandle): Node | null
+
+  // 文档结构（内部调用 wrapHandleWith）
+  documentElement(): Node | null
+  body(): Node | null
+  head(): Node | null
+
+  // 树变更（NodeHandle 入参，_nodes 由 Node 层维护）
+  appendChild(parent: NodeHandle, child: NodeHandle): void
+  removeChild(parent: NodeHandle, child: NodeHandle): void
+  insertBefore(parent: NodeHandle, newNode: NodeHandle, ref: NodeHandle): void
+  replaceChild(parent: NodeHandle, newNode: NodeHandle, old: NodeHandle): void
+
+  // 节点创建（返回 NodeHandle，游离状态）
+  createElement(tagName: string): NodeHandle
+  createTextNode(data: string): NodeHandle
+  createComment(data: string): NodeHandle
+
+  // Bootstrap 专用（仅 Document 构造时调用）
+  documentNode(): NodeHandle
+}
+```
 
 ---
 
-## JS 层节点生命周期与 Set 管理
+## 模块依赖与运行时求值顺序
 
 ```
-Document.#docCtx._nodes: Set<Node>
-  ├── 保存所有仍在 DOM 树中的 Node / Element / HTMLElement / ... 实例
-  ├── 节点通过 appendChild / insertBefore 等方法进入树时加入此 Set
-  └── 节点通过 removeChild 移出树时从此 Set 中删除
+webatom_ext_native:dom  (Rust native)
+        ↓
+native.ts               re-export NodeHandle, DocumentHandle
+        ↓  运行时导入
+node.ts                 定义 Node、wrapHandleWith
+                        import type { DocumentContext }  ← 仅类型，运行时无依赖
+        ↓  运行时导入 Node + wrapHandleWith
+document-context.ts     定义 DocumentContext
+        ↓
+document.ts             定义 Document（new DocumentContext()）
+        ↓
+element.ts              定义 Element，registerNodeType(ELEMENT_NODE)
+        ↓
+window.ts               入口，组装 window 全局对象
 ```
 
-**为什么需要这个 Set：**
+**循环分析**：
+- `node.ts` 对 `document-context.ts` 只做 `import type`，运行时零依赖
+- `document-context.ts` 运行时导入 `node.ts`（单向）
+- 运行时求值顺序线性无环
 
-- 阻止 QuickJS GC 在节点仍在 DOM 树中时回收对应的 JS 对象
-- 当节点移出树（`removeChild`），从 Set 中删除 → JS 对象可被 GC 回收 → `NodeHandle` 的 `Drop` 触发 → Rust 侧节点释放
-- 保证同一 DOM 节点始终对应同一个 JS 实例（通过 `_handleNodeMap` 查找复用）
+---
 
-**生命周期流程：**
+## Document.constructor 模式
+
+```ts
+// src/interface/document.ts
+export class Document extends Node {
+  constructor() {
+    const docCtx = new DocumentContext();     // DocumentContext 内部 new DocumentHandle()
+    const docNode = docCtx.documentNode();    // bootstrap：取文档根 NodeHandle
+    super(docCtx, docNode);                   // Node._ctx = docCtx, _handle = docNode
+    docCtx._handleNodeMap.set(docNode, this); // 文档根句柄 → Document 实例
+    docCtx._nodes.add(this);                  // 保活
+  }
+}
+```
+
+`Document` 完全不感知 `DocumentHandle`，只与 `DocumentContext` 交互。
+
+---
+
+## Node 构造与遍历
+
+```ts
+class Node extends EventTarget {
+  _ctx: DocumentContext;   // 同文档所有节点共享同一个 ctx
+  _handle: NodeHandle;
+
+  constructor(ctx: DocumentContext, handle: NodeHandle) {
+    super();
+    this._ctx = ctx;
+    this._handle = handle;
+  }
+
+  // 遍历：直接调用 _ctx bridge 方法，返回 Node | null
+  get parentNode(): Node | null  { return this._ctx.parentNode(this._handle); }
+  get firstChild(): Node | null  { return this._ctx.firstChild(this._handle); }
+  get nextSibling(): Node | null { return this._ctx.nextSibling(this._handle); }
+
+  get childNodes(): Node[] {
+    const result: Node[] = [];
+    let child = this._ctx.firstChild(this._handle);
+    while (child) {
+      result.push(child);
+      child = this._ctx.nextSibling(child._handle);  // 用子节点 _handle 继续遍历
+    }
+    return result;
+  }
+
+  // 变更：_ctx 做 Rust 操作，Node 层维护 _nodes
+  appendChild<T extends Node>(node: T): T {
+    this._ctx.appendChild(this._handle, node._handle);
+    this._ctx._nodes.add(node);
+    return node;
+  }
+
+  removeChild<T extends Node>(child: T): T {
+    this._ctx.removeChild(this._handle, child._handle);
+    this._ctx._nodes.delete(child);
+    return child;
+  }
+}
+```
+
+---
+
+## wrapHandleWith（node.ts 内部函数）
+
+```ts
+export function wrapHandleWith(ctx: DocumentContext, handle: NodeHandle | null): Node | null {
+  if (!handle) return null;
+  // 优先复用已有 JS 实例
+  const existing = ctx._handleNodeMap.get(handle);
+  if (existing) return existing;
+  // 按 nodeType 选择正确子类工厂
+  const type = ctx._docHandle.nodeType(handle);
+  const factory = getNodeFactory(type);
+  const node = factory ? factory(ctx, handle) : new Node(ctx, handle);
+  ctx._handleNodeMap.set(handle, node);
+  // HTML 解析产生的树内节点，首次 JS 访问时立即保活
+  if (ctx._docHandle.parentNode(handle) !== null) {
+    ctx._nodes.add(node);
+  }
+  return node;
+}
+```
+
+`DocumentContext` 的树遍历方法均调用此函数。`Node` 层通常不直接调用 `wrapHandleWith`，除 `textContent` setter 等需直接操作 NodeHandle 的场合。
+
+---
+
+## 节点生命周期
 
 ```
+new DocumentContext()
+  → new DocumentHandle()（Rust 创建 Document 及根节点）
+
 createElement / createTextNode
-  → DocumentHandle 创建 Rust 节点，返回 NodeHandle
-  → JS 层包装为 Node / Element 实例，存入 _handleNodeMap（暂不进 _nodes，处于游离状态）
+  → DocumentContext.createElement() → NodeHandle（游离，不进 _nodes）
+  → Document.createElement() 调用 wrapHandleWith → 存入 _handleNodeMap
+
+HTML 解析产生的树内节点
+  → 首次通过 DocumentContext 遍历方法访问
+  → wrapHandleWith 检测 parentNode !== null → 加入 _nodes
 
 appendChild / insertBefore
-  → 节点进入 DOM 树
-  → 加入 _nodes Set（防止 GC 回收）
+  → Node 层：_ctx 做 Rust 树操作 + _ctx._nodes.add(node)
 
 removeChild
-  → 节点移出 DOM 树
-  → 从 _nodes Set 删除
-  → 若无其他 JS 引用，GC 最终回收该 Node 实例
-  → NodeHandle.drop() 触发 → Rust 侧节点释放
+  → Node 层：_ctx 做 Rust 树操作 + _ctx._nodes.delete(child)
+  → 若无其他 JS 引用 → GC → NodeHandle.drop() → Rust 侧节点回收
 ```
 
 ---
@@ -111,61 +247,66 @@ removeChild
 ## 类层次与职责
 
 ```
-EventTarget          ← 纯 JS 实现（event-target.ts）
-  └── Node           ← 封装 NodeHandle + DocumentContext，实现 W3C Node 接口（node.ts）
-        ├── Document ← 持有 #docCtx，实现 W3C Document 接口（document.ts）
-        └── Element  ← 实现 W3C Element 接口（element.ts）
-              └── HTMLElement  ← 实现 W3C HTMLElement 接口（html_element.ts）
+EventTarget              event-target.ts
+  └── Node               node.ts          _ctx + _handle，W3C Node 接口
+        ├── Document     document.ts      new DocumentContext()，W3C Document 接口
+        └── Element      element.ts       W3C Element 接口
+              └── HTMLElement            W3C HTMLElement（后续实现）
 ```
 
-| 类 | 持有 | 职责 |
+| 类 | 构造参数 | 关键职责 |
 |---|---|---|
-| `Node` | `_ctx: DocumentContext`（非 null）、`_handle: NodeHandle` | nodeType / nodeValue / 树遍历 / 树变更 |
-| `Document` | `#docCtx`（含 `_docHandle`、`_nodes`、`_handleNodeMap`） | createElement / createTextNode / getElementById / 生命周期管理 |
-| `Element` | （继承 Node） | getAttribute / setAttribute / children / className / id |
-| `HTMLElement` | （继承 Element） | style / dataset / 各具体标签属性 |
+| `DocumentContext` | `()` | new DocumentHandle，桥接所有节点操作 |
+| `Node` | `ctx, handle` | 树遍历、树变更、nodeValue/textContent |
+| `Document` | `()` | new DocumentContext，createElement/getElementById |
+| `Element` | `ctx, handle` | tagName/id/className/classList/getAttribute |
 
 ---
 
-## 节点包装（wrapHandleWith）
-
-定义在 `node.ts`，所有从 Rust 侧获取 NodeHandle 后的包装均走此函数：
+## 节点工厂注册（html/index.ts）
 
 ```ts
-function wrapHandleWith(ctx: DocumentContext, handle: NodeHandle | null): Node | null {
-  if (!handle) return null;
-  // 优先从 _handleNodeMap 复用已有实例
-  const existing = ctx._handleNodeMap.get(handle);
-  if (existing) return existing;
-  // 根据 nodeType 选择正确的子类工厂
-  const type = ctx._docHandle.nodeType(handle);
-  const factory = nodeRegistry.get(type);
-  const node = factory ? factory(ctx, handle) : new Node(ctx, handle);
-  ctx._handleNodeMap.set(handle, node);
-  return node;
+import type { DocumentContext } from '@/interface/document-context';
+import type { NodeHandle } from '@/interface/native';
+import type { Node } from '@/interface/node';
+
+type NodeFactory = (ctx: DocumentContext, handle: NodeHandle) => Node;
+
+const nodeRegistry = new Map<number, NodeFactory>();
+export function registerNodeType(nodeType: number, factory: NodeFactory): void
+export function getNodeFactory(nodeType: number): NodeFactory | undefined
+```
+
+`element.ts` 底部注册：`registerNodeType(Node.ELEMENT_NODE, (ctx, h) => new Element(ctx, h))`
+
+`window.ts` 必须在 `new Document()` 之前执行 `import '@/interface/element'`（side-effect），确保工厂已注册。
+
+---
+
+## Element 接口（element.ts）
+
+```ts
+export class Element extends Node {
+  get tagName(): string                               // 大写
+  get id(): string;       set id(v: string)
+  get className(): string; set className(v: string)
+  get classList(): DOMTokenList                       // 最小 shim
+
+  getAttribute(name: string): string | null
+  setAttribute(name: string, value: string): void
+  removeAttribute(name: string): void
+  hasAttribute(name: string): boolean
+  getAttributeNames(): string[]
+
+  get children(): Element[]
+  get firstElementChild(): Element | null
+  get lastElementChild(): Element | null
+  get childElementCount(): number
+  get nextElementSibling(): Element | null
+  get previousElementSibling(): Element | null
+
+  append(...nodes: (Node | string)[]): void
+  prepend(...nodes: (Node | string)[]): void
+  remove(): void
 }
 ```
-
-新子类通过 `registerNodeType(nodeType, factory)` 注册工厂，`wrapHandleWith` 自动路由。
-
----
-
-## 文件依赖关系
-
-```
-native (Rust)          → 导出 NodeHandle、DocumentHandle（运行时原语）
-     ↓ import type
-node.ts                → 导出 Node、wrapHandleWith、registerNodeType、NodeHandle(re-export)
-     ↓ import
-document.ts            → 定义 DocumentContext 接口、导出 Document
-     ↓ import type (node.ts → document.ts，仅类型，运行时无循环)
-element.ts / ...       → 扩展 Node
-```
-
----
-
-## 与 Web DOM 的对齐目标
-
-- 属性和方法签名与 MDN / W3C 规范一致，不引入自定义前缀
-- 错误时抛出标准 `DOMException`（`HierarchyRequestError`、`NotFoundError` 等）
-- 实现顺序：`Node → Document → Element → HTMLElement → 具体标签类`，不跳过继承层级

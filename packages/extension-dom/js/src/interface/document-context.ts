@@ -1,7 +1,28 @@
+// Bridge between DocumentHandle (Rust primitives) and the JS Node layer.
+// Creates and owns the single DocumentHandle for its document.
+
 import { DocumentHandle, NodeHandle } from './native';
-import { Node } from './node.js';
+import { Node } from './node';
+import { getNodeFactory } from '@/html/index';
 
 export class DocumentContext {
+  // ── Handle → Node wrapping ───────────────────────────────────────────────
+
+  wrap(handle: NodeHandle | null): Node | null {
+    if (!handle) return null;
+    const existing = this._handleNodeMap.get(handle);
+    if (existing) return existing;
+    const type = this._docHandle.nodeType(handle);
+    const factory = getNodeFactory(type);
+    const node = factory ? factory(this, handle) : new Node(this, handle);
+    this._handleNodeMap.set(handle, node);
+    if (this._docHandle.parentNode(handle) !== null) {
+      this._nodes.add(node);
+    }
+    return node;
+  }
+
+
   readonly _docHandle: DocumentHandle;
   readonly _nodes: Set<Node> = new Set();
   readonly _handleNodeMap: WeakMap<NodeHandle, Node> = new WeakMap();
@@ -9,12 +30,8 @@ export class DocumentContext {
   constructor() {
     this._docHandle = new DocumentHandle();
   }
-  getNode(node: NodeHandle): Node {
-    return this._handleNodeMap.get(node)!;
-  }
 
-
-  // ── Node properties ──────────────────────────────────────────────────────
+  // ── Scalar queries (no wrapping) ─────────────────────────────────────────
 
   nodeType(node: NodeHandle): number {
     return this._docHandle.nodeType(node);
@@ -31,89 +48,6 @@ export class DocumentContext {
   setNodeValue(node: NodeHandle, value: string | null): void {
     this._docHandle.setNodeValue(node, value);
   }
-
-  // ── Tree traversal ───────────────────────────────────────────────────────
-
-  parentNode(node: NodeHandle): Node | null {
-    const handle = this._docHandle.parentNode(node);
-    return handle ? this.getNode(handle) : null;
-  }
-
-  firstChild(node: NodeHandle): Node | null {
-    console.log('contextstart')
-    const handle = this._docHandle.firstChild(node);
-    console.log('context', handle)
-    return handle ? this.getNode(handle) : null;
-  }
-
-  lastChild(node: NodeHandle): Node | null {
-
-    const handle = this._docHandle.lastChild(node);
-    return handle ? this.getNode(handle) : null;
-  }
-
-  nextSibling(node: NodeHandle): Node | null {
-    const handle = this._docHandle.nextSibling(node);
-    return handle ? this.getNode(handle) : null;
-  }
-
-  previousSibling(node: NodeHandle): Node | null {
-    const handle = this._docHandle.previousSibling(node);
-    return handle ? this.getNode(handle) : null;
-  }
-
-  // ── Tree mutation ────────────────────────────────────────────────────────
-
-  appendChild(parent: NodeHandle, child: NodeHandle): void {
-    this._docHandle.appendChild(parent, child);
-    
-  }
-
-  removeChild(parent: NodeHandle, child: NodeHandle): void {
-    this._docHandle.removeChild(parent, child);
-  }
-
-  insertBefore(parent: NodeHandle, newNode: NodeHandle, ref: NodeHandle): void {
-    this._docHandle.insertBefore(parent, newNode, ref);
-  }
-
-  replaceChild(parent: NodeHandle, newNode: NodeHandle, old: NodeHandle): void {
-    this._docHandle.replaceChild(parent, newNode, old);
-  }
-
-  // ── Node creation ────────────────────────────────────────────────────────
-
-  createElement(tagName: string): NodeHandle {
-    return this._docHandle.createElement(tagName);
-  }
-
-  createTextNode(data: string): NodeHandle {
-    return this._docHandle.createTextNode(data);
-  }
-
-  createComment(data: string): NodeHandle {
-    return this._docHandle.createComment(data);
-  }
-
-  // ── Document structure ───────────────────────────────────────────────────
-
-  documentNode(): NodeHandle {
-    return this._docHandle.documentNode();
-  }
-
-  documentElement(): NodeHandle | null {
-    return this._docHandle.documentElement();
-  }
-
-  body(): NodeHandle | null {
-    return this._docHandle.body();
-  }
-
-  head(): NodeHandle | null {
-    return this._docHandle.head();
-  }
-
-  // ── Attributes ───────────────────────────────────────────────────────────
 
   getAttribute(node: NodeHandle, name: string): string | null {
     return this._docHandle.getAttribute(node, name);
@@ -133,5 +67,79 @@ export class DocumentContext {
 
   attributes(node: NodeHandle): [string, string][] {
     return this._docHandle.attributes(node);
+  }
+
+  // ── Tree traversal (wraps result to Node | null) ─────────────────────────
+
+  parentNode(node: NodeHandle): Node | null {
+    return this.wrap(this._docHandle.parentNode(node));
+  }
+
+  firstChild(node: NodeHandle): Node | null {
+    return this.wrap(this._docHandle.firstChild(node));
+  }
+
+  lastChild(node: NodeHandle): Node | null {
+    return this.wrap(this._docHandle.lastChild(node));
+  }
+
+  nextSibling(node: NodeHandle): Node | null {
+    return this.wrap(this._docHandle.nextSibling(node));
+  }
+
+  previousSibling(node: NodeHandle): Node | null {
+    return this.wrap(this._docHandle.previousSibling(node));
+  }
+
+  // ── Document structure (wraps result to Node | null) ─────────────────────
+
+  documentElement(): Node | null {
+    return this.wrap(this._docHandle.documentElement());
+  }
+
+  body(): Node | null {
+    return this.wrap(this._docHandle.body());
+  }
+
+  head(): Node | null {
+    return this.wrap(this._docHandle.head());
+  }
+
+  // ── Tree mutation (NodeHandle args; _nodes managed by Node layer) ─────────
+
+  appendChild(parent: NodeHandle, child: NodeHandle): void {
+    this._docHandle.appendChild(parent, child);
+  }
+
+  removeChild(parent: NodeHandle, child: NodeHandle): void {
+    this._docHandle.removeChild(parent, child);
+  }
+
+  insertBefore(parent: NodeHandle, newNode: NodeHandle, ref: NodeHandle): void {
+    this._docHandle.insertBefore(parent, newNode, ref);
+  }
+
+  replaceChild(parent: NodeHandle, newNode: NodeHandle, old: NodeHandle): void {
+    this._docHandle.replaceChild(parent, newNode, old);
+  }
+
+  // ── Node creation (returns NodeHandle — detached, not in _nodes) ──────────
+
+  createElement(tagName: string): NodeHandle {
+    return this._docHandle.createElement(tagName);
+  }
+
+  createTextNode(data: string): NodeHandle {
+    return this._docHandle.createTextNode(data);
+  }
+
+  createComment(data: string): NodeHandle {
+    return this._docHandle.createComment(data);
+  }
+
+  // ── Bootstrap (Document constructor only) ────────────────────────────────
+
+  documentNode(): NodeHandle {
+    return this._docHandle.documentNode();
   }
 }
