@@ -1,108 +1,109 @@
 // https://dom.spec.whatwg.org/#interface-eventtarget
 
-type ListenerEntry = EventListener | EventListenerObject;
-type ListenerOptions = boolean | AddEventListenerOptions | undefined;
-type ListenerMap = Map<string, Map<ListenerEntry, ListenerOptions>>;
+import { Event } from './event';
 
-const wm = new WeakMap<object, ListenerMap>();
-
-function dispatch(event: Event, listener: EventListenerObject | EventListener): boolean {
-  if (typeof listener === 'function')
-    listener.call(event.target, event);
-  else
-    listener.handleEvent(event);
-  return (event as any).stopImmediatePropagation;
+interface InternalListener {
+  callback: ((...args: any[]) => any) | { handleEvent: (...args: any[]) => any };
+  capture:  boolean;
+  once:     boolean;
+  passive:  boolean;
 }
 
-interface PathEntry {
-  currentTarget: object;
-  target: object;
-}
-
-function invokeListeners(this: Event, { currentTarget, target }: PathEntry): boolean | undefined {
-  const map = wm.get(currentTarget);
-  if (map && map.has(this.type)) {
-    const listeners = map.get(this.type)!;
-    const ev = this as any;
-    if (currentTarget === target) {
-      ev.eventPhase = ev.AT_TARGET;
+function invokeListeners(target: EventTarget, event: Event, capture: boolean): void {
+  const list = target._listeners.get(event.type);
+  if (!list) return;
+  // Snapshot to handle once-removal and re-entrancy
+  for (const entry of [...list]) {
+    if (event._immediatePropagationStopped) break;
+    if (entry.capture !== capture) continue;
+    if (entry.once) {
+      const idx = list.indexOf(entry);
+      if (idx !== -1) list.splice(idx, 1);
+    }
+    if (typeof entry.callback === 'function') {
+      entry.callback.call(target, event);
     } else {
-      ev.eventPhase = ev.BUBBLING_PHASE;
+      entry.callback.handleEvent.call(target, event);
     }
-
-    ev.currentTarget = currentTarget;
-    ev.target = target;
-    for (const [listener, options] of listeners) {
-      if (options && typeof options !== 'boolean' && options.once)
-        listeners.delete(listener);
-      if (dispatch(this, listener))
-        break;
-    }
-    delete ev.currentTarget;
-    delete ev.target;
-    return ev.cancelBubble as boolean;
   }
 }
 
-
-/**
- * @implements globalThis.EventTarget
- */
-class DOMEventTarget {
-
-  constructor() {
-    wm.set(this, new Map());
-  }
+export class EventTarget {
+  /** @internal — listener storage; public only for cross-file helper access */
+  _listeners: Map<string, InternalListener[]> = new Map();
 
   /**
-   * @protected
+   * Override in subclasses to provide the bubble target (parent node, shadow host, …).
+   * Return null to stop propagation at this target.
    */
-  _getParent(): DOMEventTarget | null {
+  _getParent(): EventTarget | null {
     return null;
   }
 
-  addEventListener(
-    type: string,
-    listener: ListenerEntry | null,
-    options?: boolean | AddEventListenerOptions,
-  ): void {
-    if (!listener) return;
-    const map = wm.get(this)!;
-    if (!map.has(type))
-      map.set(type, new Map());
-    map.get(type)!.set(listener, options);
+  addEventListener(type: string, callback: any, options?: any): void {
+    if (!callback) return;
+    const capture = typeof options === 'boolean' ? options : (options?.capture ?? false);
+    const once    = typeof options === 'object'  ? (options?.once    ?? false) : false;
+    const passive = typeof options === 'object'  ? (options?.passive ?? false) : false;
+
+    if (!this._listeners.has(type)) this._listeners.set(type, []);
+    const list = this._listeners.get(type)!;
+    // Deduplicate: same callback + same capture flag = same slot
+    if (!list.some(l => l.callback === callback && l.capture === capture)) {
+      list.push({ callback, capture, once, passive });
+    }
   }
 
-  removeEventListener(
-    type: string,
-    listener: ListenerEntry | null,
-    _options?: boolean | EventListenerOptions,
-  ): void {
-    if (!listener) return;
-    const map = wm.get(this)!;
-    if (map.has(type)) {
-      const listeners = map.get(type)!;
-      if (listeners.delete(listener) && !listeners.size)
-        map.delete(type);
-    }
+  removeEventListener(type: string, callback: any, options?: any): void {
+    if (!callback) return;
+    const capture = typeof options === 'boolean' ? options : (options?.capture ?? false);
+    const list = this._listeners.get(type);
+    if (!list) return;
+    const idx = list.findIndex(l => l.callback === callback && l.capture === capture);
+    if (idx !== -1) list.splice(idx, 1);
   }
 
   dispatchEvent(event: Event): boolean {
-    let node: DOMEventTarget | null = this;
-    (event as any).eventPhase = (event as any).CAPTURING_PHASE;
-
-    // intentionally simplified, specs imply way more code: https://dom.spec.whatwg.org/#event-path
+    // Build path from this node up to root: [target, parent, …, root]
+    const path: EventTarget[] = [];
+    let node: EventTarget | null = this;
     while (node) {
-      if ((node as any).dispatchEvent)
-        (event as any)._path.push({ currentTarget: node, target: this });
-      node = event.bubbles && node._getParent ? node._getParent() : null;
+      path.push(node);
+      node = node._getParent();
     }
-    (event as any)._path.some(invokeListeners, event);
-    (event as any)._path = [];
-    (event as any).eventPhase = (event as any).NONE;
+
+    event.target = this;
+
+    // ── Capture phase: root → parent of target ───────────────────────────────
+    for (let i = path.length - 1; i > 0; i--) {
+      if (event._propagationStopped) break;
+      event.currentTarget = path[i];
+      event.eventPhase    = Event.CAPTURING_PHASE;
+      invokeListeners(path[i], event, true);
+    }
+
+    // ── At-target phase: capture and bubble listeners both fire ───────────────
+    if (!event._propagationStopped) {
+      event.currentTarget = this;
+      event.eventPhase    = Event.AT_TARGET;
+      invokeListeners(this, event, true);
+      if (!event._immediatePropagationStopped) {
+        invokeListeners(this, event, false);
+      }
+    }
+
+    // ── Bubble phase: parent → root ───────────────────────────────────────────
+    if (event.bubbles) {
+      for (let i = 1; i < path.length; i++) {
+        if (event._propagationStopped) break;
+        event.currentTarget = path[i];
+        event.eventPhase    = Event.BUBBLING_PHASE;
+        invokeListeners(path[i], event, false);
+      }
+    }
+
+    event.currentTarget = null;
+    event.eventPhase    = Event.NONE;
     return !event.defaultPrevented;
   }
-
 }
-
-export { DOMEventTarget as EventTarget };

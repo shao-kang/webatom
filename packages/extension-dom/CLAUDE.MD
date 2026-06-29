@@ -176,7 +176,7 @@ TS 源码经 Rolldown 编译为 `crates/dom/js/dist/index.js`（`iife` 格式）
 JS 线程                                    Blitz 线程（winit 事件循环）
 ──────────────────────────────────────────────────────────────────────
 dom_tx.send(DomMsg)  ──crossbeam──→  drain_dom_msgs() → apply → layout → paint
-event_rx  ←──────────crossbeam────  event_tx.send(BlitzEvent)
+event_rx  ←──────────crossbeam────  event_tx.send(Event)
 ```
 
 | 信道 | 类型 | 方向 | 语义 |
@@ -244,14 +244,14 @@ Context 初始化时（DOM 扩展 `install()` 完成后），发送一次 `DomMs
 
 `drain_dom_msgs()` 内部已处理 Full/Patch 合并语义：Full 出现时丢弃之前所有 Patch，Patch 之间自动合并为一批。
 
-### BlitzEvent 回流（Phase 1）
+### Event 回流（Phase 1）
 
-Blitz layout 完成后，把 ResizeObserver / IntersectionObserver 所需数据作为新的 `BlitzEvent` 变体发回 JS，由 EventLoop 在 idle 阶段通过 `drain_events()` 消费：
+Blitz layout 完成后，把 ResizeObserver / IntersectionObserver 所需数据作为新的 `Event` 变体发回 JS，由 EventLoop 在 idle 阶段通过 `drain_events()` 消费：
 
 ```rust
-// 扩展 BlitzEvent（Phase 1）
-BlitzEvent::ResizeEntries { entries: Vec<ResizeEntry> }
-BlitzEvent::IntersectionEntries { entries: Vec<IntersectionEntry> }
+// 扩展 Event（Phase 1）
+Event::ResizeEntries { entries: Vec<ResizeEntry> }
+Event::IntersectionEntries { entries: Vec<IntersectionEntry> }
 ```
 
 不需要跨线程同步等待，与用户事件共享同一条 `event_rx` 通道。

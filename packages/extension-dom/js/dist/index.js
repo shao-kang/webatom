@@ -1,69 +1,198 @@
 import { DocumentHandle } from "webatom_ext_native:dom";
-//#region src/interface/event-target.ts
-const wm = /* @__PURE__ */ new WeakMap();
-function dispatch(event, listener) {
-	if (typeof listener === "function") listener.call(event.target, event);
-	else listener.handleEvent(event);
-	return event.stopImmediatePropagation;
-}
-function invokeListeners({ currentTarget, target }) {
-	const map = wm.get(currentTarget);
-	if (map && map.has(this.type)) {
-		const listeners = map.get(this.type);
-		const ev = this;
-		if (currentTarget === target) ev.eventPhase = ev.AT_TARGET;
-		else ev.eventPhase = ev.BUBBLING_PHASE;
-		ev.currentTarget = currentTarget;
-		ev.target = target;
-		for (const [listener, options] of listeners) {
-			if (options && typeof options !== "boolean" && options.once) listeners.delete(listener);
-			if (dispatch(this, listener)) break;
+//#region src/interface/event.ts
+var Event$1 = class {
+	static {
+		this.NONE = 0;
+	}
+	static {
+		this.CAPTURING_PHASE = 1;
+	}
+	static {
+		this.AT_TARGET = 2;
+	}
+	static {
+		this.BUBBLING_PHASE = 3;
+	}
+	constructor(type, init) {
+		this.NONE = 0;
+		this.CAPTURING_PHASE = 1;
+		this.AT_TARGET = 2;
+		this.BUBBLING_PHASE = 3;
+		this.isTrusted = false;
+		this.target = null;
+		this.currentTarget = null;
+		this.eventPhase = 0;
+		this.defaultPrevented = false;
+		this._propagationStopped = false;
+		this._immediatePropagationStopped = false;
+		this.type = type;
+		this.bubbles = init?.bubbles ?? false;
+		this.cancelable = init?.cancelable ?? false;
+		this.composed = init?.composed ?? false;
+		this.timeStamp = Date.now();
+	}
+	stopPropagation() {
+		this._propagationStopped = true;
+	}
+	stopImmediatePropagation() {
+		this._propagationStopped = true;
+		this._immediatePropagationStopped = true;
+	}
+	preventDefault() {
+		if (this.cancelable) this.defaultPrevented = true;
+	}
+	composedPath() {
+		return [];
+	}
+};
+var UIEvent = class extends Event$1 {
+	constructor(type, init) {
+		super(type, init);
+		this.detail = init?.detail ?? 0;
+	}
+};
+var KeyboardEvent = class extends UIEvent {
+	static {
+		this.DOM_KEY_LOCATION_STANDARD = 0;
+	}
+	static {
+		this.DOM_KEY_LOCATION_LEFT = 1;
+	}
+	static {
+		this.DOM_KEY_LOCATION_RIGHT = 2;
+	}
+	static {
+		this.DOM_KEY_LOCATION_NUMPAD = 3;
+	}
+	constructor(type, init) {
+		super(type, init);
+		this.location = 0;
+		this.key = init?.key ?? "";
+		this.code = init?.code ?? "";
+		this.altKey = init?.altKey ?? false;
+		this.ctrlKey = init?.ctrlKey ?? false;
+		this.shiftKey = init?.shiftKey ?? false;
+		this.metaKey = init?.metaKey ?? false;
+		this.repeat = init?.repeat ?? false;
+	}
+	getModifierState(key) {
+		switch (key) {
+			case "Alt": return this.altKey;
+			case "Control": return this.ctrlKey;
+			case "Shift": return this.shiftKey;
+			case "Meta": return this.metaKey;
+			default: return false;
 		}
-		delete ev.currentTarget;
-		delete ev.target;
-		return ev.cancelBubble;
+	}
+};
+var MouseEvent = class extends UIEvent {
+	constructor(type, init) {
+		super(type, init);
+		this.clientX = init?.clientX ?? 0;
+		this.clientY = init?.clientY ?? 0;
+		this.pageX = init?.pageX ?? init?.clientX ?? 0;
+		this.pageY = init?.pageY ?? init?.clientY ?? 0;
+		this.screenX = init?.screenX ?? 0;
+		this.screenY = init?.screenY ?? 0;
+		this.button = init?.button ?? 0;
+		this.buttons = init?.buttons ?? 0;
+		this.altKey = init?.altKey ?? false;
+		this.ctrlKey = init?.ctrlKey ?? false;
+		this.shiftKey = init?.shiftKey ?? false;
+		this.metaKey = init?.metaKey ?? false;
+		this.relatedTarget = init?.relatedTarget ?? null;
+	}
+};
+var FocusEvent = class extends UIEvent {
+	constructor(type, init) {
+		super(type, init);
+		this.relatedTarget = init?.relatedTarget ?? null;
+	}
+};
+var InputEvent = class extends Event$1 {
+	constructor(type, init) {
+		super(type, init);
+		this.data = init?.data ?? null;
+		this.inputType = init?.inputType ?? "";
+	}
+};
+//#endregion
+//#region src/interface/event-target.ts
+function invokeListeners(target, event, capture) {
+	const list = target._listeners.get(event.type);
+	if (!list) return;
+	for (const entry of [...list]) {
+		if (event._immediatePropagationStopped) break;
+		if (entry.capture !== capture) continue;
+		if (entry.once) {
+			const idx = list.indexOf(entry);
+			if (idx !== -1) list.splice(idx, 1);
+		}
+		if (typeof entry.callback === "function") entry.callback.call(target, event);
+		else entry.callback.handleEvent.call(target, event);
 	}
 }
-/**
-* @implements globalThis.EventTarget
-*/
-var DOMEventTarget = class {
+var EventTarget = class {
 	constructor() {
-		wm.set(this, /* @__PURE__ */ new Map());
+		this._listeners = /* @__PURE__ */ new Map();
 	}
 	/**
-	* @protected
+	* Override in subclasses to provide the bubble target (parent node, shadow host, …).
+	* Return null to stop propagation at this target.
 	*/
 	_getParent() {
 		return null;
 	}
-	addEventListener(type, listener, options) {
-		if (!listener) return;
-		const map = wm.get(this);
-		if (!map.has(type)) map.set(type, /* @__PURE__ */ new Map());
-		map.get(type).set(listener, options);
+	addEventListener(type, callback, options) {
+		if (!callback) return;
+		const capture = typeof options === "boolean" ? options : options?.capture ?? false;
+		const once = typeof options === "object" ? options?.once ?? false : false;
+		const passive = typeof options === "object" ? options?.passive ?? false : false;
+		if (!this._listeners.has(type)) this._listeners.set(type, []);
+		const list = this._listeners.get(type);
+		if (!list.some((l) => l.callback === callback && l.capture === capture)) list.push({
+			callback,
+			capture,
+			once,
+			passive
+		});
 	}
-	removeEventListener(type, listener, _options) {
-		if (!listener) return;
-		const map = wm.get(this);
-		if (map.has(type)) {
-			const listeners = map.get(type);
-			if (listeners.delete(listener) && !listeners.size) map.delete(type);
-		}
+	removeEventListener(type, callback, options) {
+		if (!callback) return;
+		const capture = typeof options === "boolean" ? options : options?.capture ?? false;
+		const list = this._listeners.get(type);
+		if (!list) return;
+		const idx = list.findIndex((l) => l.callback === callback && l.capture === capture);
+		if (idx !== -1) list.splice(idx, 1);
 	}
 	dispatchEvent(event) {
+		const path = [];
 		let node = this;
-		event.eventPhase = event.CAPTURING_PHASE;
 		while (node) {
-			if (node.dispatchEvent) event._path.push({
-				currentTarget: node,
-				target: this
-			});
-			node = event.bubbles && node._getParent ? node._getParent() : null;
+			path.push(node);
+			node = node._getParent();
 		}
-		event._path.some(invokeListeners, event);
-		event._path = [];
-		event.eventPhase = event.NONE;
+		event.target = this;
+		for (let i = path.length - 1; i > 0; i--) {
+			if (event._propagationStopped) break;
+			event.currentTarget = path[i];
+			event.eventPhase = Event$1.CAPTURING_PHASE;
+			invokeListeners(path[i], event, true);
+		}
+		if (!event._propagationStopped) {
+			event.currentTarget = this;
+			event.eventPhase = Event$1.AT_TARGET;
+			invokeListeners(this, event, true);
+			if (!event._immediatePropagationStopped) invokeListeners(this, event, false);
+		}
+		if (event.bubbles) for (let i = 1; i < path.length; i++) {
+			if (event._propagationStopped) break;
+			event.currentTarget = path[i];
+			event.eventPhase = Event$1.BUBBLING_PHASE;
+			invokeListeners(path[i], event, false);
+		}
+		event.currentTarget = null;
+		event.eventPhase = Event$1.NONE;
 		return !event.defaultPrevented;
 	}
 };
@@ -88,7 +217,7 @@ const POSITION_CONSTANTS = {
 	DOCUMENT_POSITION_CONTAINED_BY: 16,
 	DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: 32
 };
-var Node = class Node extends DOMEventTarget {
+var Node = class Node extends EventTarget {
 	static {
 		this.ELEMENT_NODE = NODE_CONSTANTS.ELEMENT_NODE;
 	}
@@ -138,6 +267,9 @@ var Node = class Node extends DOMEventTarget {
 		super();
 		this._ctx = ctx;
 		this._handle = handle;
+	}
+	_getParent() {
+		return this._ctx.parentNode(this._handle);
 	}
 	get nodeType() {
 		return this._ctx.nodeType(this._handle);
@@ -350,6 +482,9 @@ var DocumentContext = class {
 		this._nodes = /* @__PURE__ */ new Set();
 		this._handleNodeMap = /* @__PURE__ */ new WeakMap();
 		this._docHandle = new DocumentHandle();
+		this._docHandle.onEvent((event) => {
+			console.log(JSON.stringify(event));
+		});
 	}
 	_attachRoot(doc) {
 		this._handleNodeMap.set(this._docHandle.documentNode(), doc);
@@ -459,6 +594,11 @@ var DocumentContext = class {
 	createComment(data) {
 		return this._docHandle.createComment(data);
 	}
+	/** Find the JS Node for a given webAtom numeric node id. */
+	/**
+	* Register a callback that receives resolved Events.
+	* `target` is already a wrapped `Node` (resolved from `targetId`), or null for non-node events.
+	*/
 	documentNode() {
 		return this._docHandle.documentNode();
 	}
@@ -1935,48 +2075,53 @@ const TAG_MAP = [
 for (const [tags, Ctor] of TAG_MAP) for (const tag of tags) registerTagType(tag, (ctx, handle) => new Ctor(ctx, handle));
 //#endregion
 //#region src/window.ts
+const location = {
+	href: "",
+	hostname: "",
+	pathname: "/",
+	search: "",
+	hash: "",
+	protocol: "about:",
+	origin: "null",
+	assign(_url) {},
+	replace(_url) {},
+	reload() {},
+	toString() {
+		return this.href;
+	}
+};
+const navigator = {
+	userAgent: "quickweb/0.1",
+	language: "en",
+	languages: ["en"],
+	onLine: true,
+	cookieEnabled: false,
+	platform: "rquickjs"
+};
+const history = {
+	length: 1,
+	scrollRestoration: "auto",
+	pushState(_state, _title, _url) {},
+	replaceState(_state, _title, _url) {},
+	go(_delta) {},
+	back() {},
+	forward() {}
+};
+const screen = {
+	width: 1280,
+	height: 720,
+	availWidth: 1280,
+	availHeight: 720,
+	colorDepth: 24,
+	pixelDepth: 24
+};
+const _winEvTarget = new EventTarget();
 const windowDefs = {
 	document: new Document(),
-	location: {
-		href: "",
-		hostname: "",
-		pathname: "/",
-		search: "",
-		hash: "",
-		protocol: "about:",
-		origin: "null",
-		assign(_url) {},
-		replace(_url) {},
-		reload() {},
-		toString() {
-			return this.href;
-		}
-	},
-	navigator: {
-		userAgent: "quickweb/0.1",
-		language: "en",
-		languages: ["en"],
-		onLine: true,
-		cookieEnabled: false,
-		platform: "rquickjs"
-	},
-	history: {
-		length: 1,
-		scrollRestoration: "auto",
-		pushState(_state, _title, _url) {},
-		replaceState(_state, _title, _url) {},
-		go(_delta) {},
-		back() {},
-		forward() {}
-	},
-	screen: {
-		width: 1280,
-		height: 720,
-		availWidth: 1280,
-		availHeight: 720,
-		colorDepth: 24,
-		pixelDepth: 24
-	},
+	location,
+	navigator,
+	history,
+	screen,
 	innerWidth: 1280,
 	innerHeight: 720,
 	outerWidth: 1280,
@@ -1986,6 +2131,13 @@ const windowDefs = {
 	scrollY: 0,
 	pageXOffset: 0,
 	pageYOffset: 0,
+	Event: Event$1,
+	UIEvent,
+	KeyboardEvent,
+	MouseEvent,
+	FocusEvent,
+	InputEvent,
+	EventTarget,
 	setTimeout(fn, _ms) {
 		fn();
 		return 0;
@@ -2008,10 +2160,14 @@ const windowDefs = {
 			display: ""
 		};
 	},
-	addEventListener(_type, _handler) {},
-	removeEventListener(_type, _handler) {},
-	dispatchEvent(_event) {
-		return true;
+	addEventListener(type, cb, opts) {
+		_winEvTarget.addEventListener(type, cb, opts);
+	},
+	removeEventListener(type, cb, opts) {
+		_winEvTarget.removeEventListener(type, cb, opts);
+	},
+	dispatchEvent(event) {
+		return _winEvTarget.dispatchEvent(event);
 	},
 	alert(_message) {},
 	confirm(_message) {

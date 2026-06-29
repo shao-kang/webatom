@@ -1,10 +1,11 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use js_runtime::event_loop::{HostBridge, KeepaliveGuard};
-use rquickjs::{Class, Ctx, Persistent, Result, Value};
+use rquickjs::{Class, Ctx, Function, Persistent, Result, Value};
 use rquickjs::class::Trace;
 use webatom_blitz_msg::patch::DomOp;
 
@@ -12,6 +13,19 @@ use crate::dom_extension::DomExtensionState;
 use super::document_inner::{DocumentInner, PatchBuffer};
 use super::node_handle::NodeHandle;
 use super::script::execute_script;
+
+/// `Persistent<Function>` wrapped in `SendPersistent` so it can cross thread boundaries
+/// when stored in `Arc<Mutex<...>>`. Safe because rquickjs guarantees the underlying
+/// JSRuntime is pinned to a single thread and we only restore the function on that thread.
+struct SendPersistent<T>(Persistent<T>);
+unsafe impl<T> Send for SendPersistent<T> {}
+unsafe impl<T> Sync for SendPersistent<T> {}
+
+impl<T: rquickjs::JsLifetime<'static> + Clone> SendPersistent<T> {
+    fn restore<'js>(&self, ctx: &Ctx<'js>) -> Result<T::Changed<'js>> {
+        self.0.clone().restore(ctx)
+    }
+}
 
 #[derive(Trace)]
 #[rquickjs::class(rename = "DocumentHandle")]
@@ -29,6 +43,16 @@ pub struct DocumentHandle {
     patch_buffer: Arc<Mutex<PatchBuffer>>,
     #[qjs(skip_trace)]
     dom_state: Option<DomExtensionState>,
+    /// Shared callback slot: spawn_blocking loop reads from here; on_event just overwrites it.
+    #[qjs(skip_trace)]
+    event_listener: Arc<Mutex<Option<SendPersistent<Function<'static>>>>>,
+    /// Set to true once the spawn_blocking loop has been started; prevents duplicate loops.
+    #[qjs(skip_trace)]
+    event_loop_running: Arc<AtomicBool>,
+    /// Mirror of DocumentInner.node_handles in a Send-capable container so MacroTask closures
+    /// can resolve a blitz node_id to its JS NodeHandle (via WeakRef restore + deref).
+    #[qjs(skip_trace)]
+    shared_handles: Arc<Mutex<HashMap<usize, SendPersistent<Value<'static>>>>>,
 }
 
 unsafe impl<'js> rquickjs::JsLifetime<'js> for DocumentHandle {
@@ -44,6 +68,9 @@ impl DocumentHandle {
             host: None,
             patch_buffer: Arc::new(Mutex::new(PatchBuffer::new())),
             dom_state: None,
+            event_listener: Arc::new(Mutex::new(None)),
+            event_loop_running: Arc::new(AtomicBool::new(false)),
+            shared_handles: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -83,7 +110,10 @@ impl DocumentHandle {
         let val: Value<'js> = Class::instance(ctx.clone(), handle)?.into_value();
         let make_weak: rquickjs::Function = ctx.eval("(t) => new WeakRef(t)")?;
         let weak_ref_val: Value<'js> = make_weak.call((val.clone(),))?;
-        self.inner.borrow_mut().node_handles.insert(id, Persistent::save(&ctx, weak_ref_val));
+        // Save one persistent in node_handles (for get_or_create cache) and a second in
+        // shared_handles (Send-capable, consumed by MacroTask handle resolution).
+        self.inner.borrow_mut().node_handles.insert(id, Persistent::save(&ctx, weak_ref_val.clone()));
+        self.shared_handles.lock().unwrap().insert(id, SendPersistent(Persistent::save(&ctx, weak_ref_val)));
         Ok(val)
     }
 }
@@ -107,6 +137,9 @@ impl DocumentHandle {
             host: Some(host),
             patch_buffer: Arc::new(Mutex::new(PatchBuffer::new())),
             dom_state,
+            event_listener: Arc::new(Mutex::new(None)),
+            event_loop_running: Arc::new(AtomicBool::new(false)),
+            shared_handles: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -438,6 +471,136 @@ impl DocumentHandle {
             self.patch_buffer.lock().unwrap().mark_attrs(id, attrs);
             self.schedule_flush();
         }
+        Ok(())
+    }
+
+    /// Register a JS callback to receive Events.
+    ///
+    /// The callback is stored in a shared slot. A single `spawn_blocking` loop started on
+    /// the first call reads events from `event_rx` and dispatches MacroTasks that invoke
+    /// whatever callback is currently in the slot. Subsequent calls to `on_event` simply
+    /// replace the callback in the slot — no new loop is spawned.
+    #[qjs(rename = "onEvent")]
+    pub fn on_event<'js>(&self, ctx: Ctx<'js>, callback: Function<'js>) -> Result<()> {
+        use webatom_blitz_msg::Event;
+
+        // Always update the shared callback slot.
+        *self.event_listener.lock().unwrap() =
+            Some(SendPersistent(Persistent::save(&ctx, callback)));
+
+        // Start the blocking loop only once.
+        if self.event_loop_running.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+
+        let Some(state) = &self.dom_state else { return Ok(()); };
+        let Some(host) = &self.host else { return Ok(()); };
+
+        let channel = Arc::clone(&state.channel);
+        let task_tx = host.io.task_tx.clone();
+        let listener = Arc::clone(&self.event_listener);
+        let shared_handles = Arc::clone(&self.shared_handles);
+
+        tokio::task::spawn_blocking(move || {
+            while let Ok(evt) = channel.event_rx.recv() {
+                let cb = Arc::clone(&listener);
+                let shared2 = Arc::clone(&shared_handles);
+                let task: js_runtime::event_loop::MacroTask = Box::new(move |ctx: Ctx<'_>| {
+                    let obj = rquickjs::Object::new(ctx.clone())?;
+                    let mut target_node_id: Option<usize> = None;
+                    match evt {
+                        Event::KeyDown { key, modifiers } => {
+                            obj.set("type", "keydown")?;
+                            obj.set("key", key)?;
+                            obj.set("modifiers", modifiers)?;
+                        }
+                        Event::KeyUp { key, modifiers } => {
+                            obj.set("type", "keyup")?;
+                            obj.set("key", key)?;
+                            obj.set("modifiers", modifiers)?;
+                        }
+                        Event::Click { node_id, x, y } => {
+                            obj.set("type", "click")?;
+                            target_node_id = Some(node_id);
+                            obj.set("x", x)?;
+                            obj.set("y", y)?;
+                        }
+                        Event::Focus { node_id } => {
+                            obj.set("type", "focus")?;
+                            target_node_id = Some(node_id);
+                        }
+                        Event::Blur { node_id } => {
+                            obj.set("type", "blur")?;
+                            target_node_id = Some(node_id);
+                        }
+                        Event::Resize { width, height } => {
+                            obj.set("type", "resize")?;
+                            obj.set("width", width)?;
+                            obj.set("height", height)?;
+                        }
+                        Event::MouseMove { x, y } => {
+                            obj.set("type", "mousemove")?;
+                            obj.set("x", x)?;
+                            obj.set("y", y)?;
+                        }
+                        Event::MouseDown { node_id, x, y, button } => {
+                            obj.set("type", "mousedown")?;
+                            target_node_id = Some(node_id);
+                            obj.set("x", x)?;
+                            obj.set("y", y)?;
+                            obj.set("button", button)?;
+                        }
+                        Event::MouseUp { node_id, x, y, button } => {
+                            obj.set("type", "mouseup")?;
+                            target_node_id = Some(node_id);
+                            obj.set("x", x)?;
+                            obj.set("y", y)?;
+                            obj.set("button", button)?;
+                        }
+                        Event::DblClick { node_id, x, y } => {
+                            obj.set("type", "dblclick")?;
+                            target_node_id = Some(node_id);
+                            obj.set("x", x)?;
+                            obj.set("y", y)?;
+                        }
+                        Event::Scroll { delta_x, delta_y } => {
+                            obj.set("type", "scroll")?;
+                            obj.set("deltaX", delta_x)?;
+                            obj.set("deltaY", delta_y)?;
+                        }
+                    }
+                    if let Some(nid) = target_node_id {
+                        let handle_val = {
+                            let guard = shared2.lock().unwrap();
+                            guard.get(&nid).and_then(|p| p.restore(&ctx).ok())
+                        }
+                        .and_then(|wr| {
+                            let wr_obj = wr.as_object()?.clone();
+                            let deref_fn: rquickjs::Function<'_> = wr_obj.get("deref").ok()?;
+                            deref_fn
+                                .call::<_, rquickjs::Value>((rquickjs::function::This(wr_obj),))
+                                .ok()
+                        })
+                        .filter(|v| !v.is_undefined() && !v.is_null())
+                        .unwrap_or_else(|| rquickjs::Value::new_null(ctx.clone()));
+                        obj.set("targetHandle", handle_val)?;
+                    }
+                    // Restore the current callback from the shared slot.
+                    let func = cb.lock().unwrap()
+                        .as_ref()
+                        .map(|p| p.restore(&ctx))
+                        .transpose()?;
+                    if let Some(func) = func {
+                        func.call::<_, ()>((obj,))?;
+                    }
+                    Ok(())
+                });
+                if task_tx.blocking_send(task).is_err() {
+                    break;
+                }
+            }
+        });
+
         Ok(())
     }
 }

@@ -7,21 +7,30 @@
 <body>
   <div style="padding: 20px; font-family: sans-serif;">
     <h1>Hello webAtom</h1>
-    <p>JS runtime + DOM extension 已接入</p>
+    <p>JS runtime + DOM extension</p>
   </div>
   <script>
+    let num = 0
     const append = ()=> {
-      const text = document.createTextNode('ssssss')
+      const text = document.createTextNode('ssssss' + num)
+      num++;
       const div = document.createElement('div');
+      div.addEventListener('click', (e)=> {
+        console.log(e.target)
+
+      })
       console.log(div)
       div.appendChild(text)
       document.body.appendChild(div);
     }
-    setInterval(()=> {
-      console.log('append')
+    const intervalId = setInterval(()=> {
+      console.log('append' + num)
       append()
+      if(num > 100) {
+        clearInterval(intervalId)
+      }
 
-    }, 1000)
+    }, 2000)
   </script>
 </body>
 </html>

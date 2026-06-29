@@ -4,6 +4,8 @@ use blitz_dom::{Attribute, BaseDocument, DocumentMutator};
 use markup5ever::{LocalName, Namespace, QualName};
 use webatom_blitz_msg::{DomOp, DomSnapshot, SnapshotNode, SnapshotNodeData};
 
+use crate::node_id_map::NodeIdMap;
+
 const BLITZ_ROOT: usize = 0;
 
 fn elem_qname(tag: &str) -> QualName {
@@ -29,7 +31,7 @@ fn to_blitz_attrs(attrs: &[(String, String)]) -> Vec<Attribute> {
 }
 
 /// 全量重建：清空 blitz root，按 DomSnapshot 重建整棵树
-pub fn apply_full(doc: &mut BaseDocument, id_map: &mut HashMap<usize, usize>, snap: &DomSnapshot) {
+pub fn apply_full(doc: &mut BaseDocument, id_map: &mut NodeIdMap, snap: &DomSnapshot) {
     id_map.clear();
     id_map.insert(snap.root, BLITZ_ROOT);
 
@@ -44,7 +46,7 @@ pub fn apply_full(doc: &mut BaseDocument, id_map: &mut HashMap<usize, usize>, sn
 
 fn build_children(
     mutator: &mut DocumentMutator<'_>,
-    id_map: &mut HashMap<usize, usize>,
+    id_map: &mut NodeIdMap,
     wa_parent: usize,
     blitz_parent: usize,
     node_lookup: &HashMap<usize, &SnapshotNode>,
@@ -69,7 +71,7 @@ fn build_children(
     }
 
     for &wa_child in &parent.children {
-        if let Some(&blitz_child) = id_map.get(&wa_child) {
+        if let Some(blitz_child) = id_map.blitz_id(wa_child) {
             build_children(mutator, id_map, wa_child, blitz_child, node_lookup);
         }
     }
@@ -87,7 +89,7 @@ fn create_blitz_node(mutator: &mut DocumentMutator<'_>, node: &SnapshotNode) -> 
 }
 
 /// 增量更新：按 DomOp 顺序调用 DocumentMutator，维护 id_map
-pub fn apply_patch(doc: &mut BaseDocument, id_map: &mut HashMap<usize, usize>, ops: &[DomOp]) {
+pub fn apply_patch(doc: &mut BaseDocument, id_map: &mut NodeIdMap, ops: &[DomOp]) {
     let mut mutator = DocumentMutator::new(doc);
     for op in ops {
         apply_op(&mut mutator, id_map, op);
@@ -95,7 +97,7 @@ pub fn apply_patch(doc: &mut BaseDocument, id_map: &mut HashMap<usize, usize>, o
     // Drop → auto flush
 }
 
-fn apply_op(mutator: &mut DocumentMutator<'_>, id_map: &mut HashMap<usize, usize>, op: &DomOp) {
+fn apply_op(mutator: &mut DocumentMutator<'_>, id_map: &mut NodeIdMap, op: &DomOp) {
     match op {
         DomOp::CreateElement { id, tag, attrs } => {
             let blitz_id = mutator.create_element(elem_qname(tag), to_blitz_attrs(attrs));
@@ -110,42 +112,40 @@ fn apply_op(mutator: &mut DocumentMutator<'_>, id_map: &mut HashMap<usize, usize
             id_map.insert(*id, blitz_id);
         }
         DomOp::AppendChild { parent, child } => {
-            let (Some(&blitz_parent), Some(&blitz_child)) =
-                (id_map.get(parent), id_map.get(child))
+            let (Some(blitz_parent), Some(blitz_child)) =
+                (id_map.blitz_id(*parent), id_map.blitz_id(*child))
             else {
                 return;
             };
             mutator.append_children(blitz_parent, &[blitz_child]);
         }
         DomOp::InsertBefore { child, before, .. } => {
-            let (Some(&blitz_child), Some(&blitz_before)) =
-                (id_map.get(child), id_map.get(before))
+            let (Some(blitz_child), Some(blitz_before)) =
+                (id_map.blitz_id(*child), id_map.blitz_id(*before))
             else {
                 return;
             };
             mutator.insert_nodes_before(blitz_before, &[blitz_child]);
         }
         DomOp::RemoveChild { child, .. } => {
-            if let Some(&blitz_child) = id_map.get(child) {
+            if let Some(blitz_child) = id_map.blitz_id(*child) {
                 mutator.remove_node(blitz_child);
             }
         }
         DomOp::DropNode { id } => {
-            if let Some(blitz_id) = id_map.remove(id) {
+            if let Some(blitz_id) = id_map.remove(*id) {
                 mutator.remove_and_drop_node(blitz_id);
             }
         }
         DomOp::ReplaceAttributes { node, attrs } => {
-            // 全量替换：覆写新属性列表中的每个属性。
-            // TODO(Phase 2)：先清除节点上不在新列表中的旧属性。
-            if let Some(&blitz_id) = id_map.get(node) {
+            if let Some(blitz_id) = id_map.blitz_id(*node) {
                 for (name, value) in attrs {
-                    mutator.set_attribute(blitz_id, attr_qname(&name), &value);
+                    mutator.set_attribute(blitz_id, attr_qname(name), value);
                 }
             }
         }
         DomOp::SetTextContent { node, content } => {
-            if let Some(&blitz_id) = id_map.get(node) {
+            if let Some(blitz_id) = id_map.blitz_id(*node) {
                 mutator.set_node_text(blitz_id, content);
             }
         }

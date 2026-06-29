@@ -36,5 +36,10 @@ declare module "webatom_ext_native:dom" {
     removeAttribute(node: NodeHandle, name: string): void;
     hasAttribute(node: NodeHandle, name: string): boolean;
     attributes(node: NodeHandle): [string, string][];
+ 
+    /** Register a callback invoked (via MacroTask) whenever a Event arrives.
+     *  For node-targeted events (click/focus/blur) the raw object carries `targetId: number`.
+     *  DocumentContext.onEvent() wraps this and resolves targetId → NodeHandle before calling user cb. */
+    onEvent(callback: (raw: { type: string; targetId?: number; key?: string; modifiers?: number; x?: number; y?: number; width?: number; height?: number }) => void): void;
   }
 }

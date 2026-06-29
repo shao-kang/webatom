@@ -1,0 +1,236 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug executable 'webatom-blitz'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=webatom-blitz",
+                    "--package=webatom-blitz"
+                ]
+            },
+            "args": []
+        },
+
+        {
+            "name": "Debug unit tests in library 'js_runtime'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=webatom-js-runtime"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'js-runtime'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=js-runtime",
+                    "--package=webatom-js-runtime"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'js-runtime'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=js-runtime",
+                    "--package=webatom-js-runtime"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'microtask_order'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=microtask_order",
+                    "--package=webatom-js-runtime"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'module_resolution'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=module_resolution",
+                    "--package=webatom-js-runtime"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'runtime'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=runtime",
+                    "--package=webatom-js-runtime"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'web_api'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=web_api",
+                    "--package=webatom-js-runtime"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'webatom_js_runtime_macro'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=webatom-js-runtime-macro"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'webatom_extension_dom'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=webatom_extension_dom"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'dom'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=dom",
+                    "--package=webatom_extension_dom"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'dom_tree'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=dom_tree",
+                    "--package=webatom_extension_dom"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'html_entry'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=html_entry",
+                    "--package=webatom_extension_dom"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'html_entry_script'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=html_entry_script",
+                    "--package=webatom_extension_dom"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'webatom_blitz_msg'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=webatom-blitz-msg"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'webatom-blitz-msg'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=webatom-blitz-msg",
+                    "--package=webatom-blitz-msg"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'webatom-blitz-msg'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=webatom-blitz-msg",
+                    "--package=webatom-blitz-msg"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'webatom_blitz'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=webatom-blitz"
+                ]
+            }
+        },
+        
+        {
+            "name": "Debug unit tests in executable 'webatom-blitz'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=webatom-blitz",
+                    "--package=webatom-blitz"
+                ]
+            }
+        }
+    ]
+}

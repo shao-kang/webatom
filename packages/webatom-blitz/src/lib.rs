@@ -1,5 +1,8 @@
 pub mod app;
+pub mod node_id_map;
 pub mod renderer;
+
+pub use node_id_map::NodeIdMap;
 
 use anyrender_vello::VelloWindowRenderer;
 use blitz_dom::{BaseDocument, DocumentConfig, DocumentMutator};

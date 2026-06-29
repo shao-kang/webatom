@@ -16,7 +16,7 @@
 | `snapshot.rs` | 全量快照类型：`DomSnapshot`、`SnapshotNode`、`SnapshotNodeData` |
 | `patch.rs` | 增量操作类型：`DomOp` |
 | `msg.rs` | 信道消息枚举：`DomMsg { Full / Patch }` |
-| `event.rs` | `BlitzEvent`：Blitz → JS 的用户事件 |
+| `event.rs` | `Event`：Blitz → JS 的用户事件 |
 | `channel.rs` | `create_channels()` 工厂 + 端口结构体 |
 
 > `dom_slot.rs` / `renderer.rs` 不属于这个 crate。
@@ -89,10 +89,10 @@ pub enum DomMsg {
 }
 ```
 
-### BlitzEvent（Blitz → JS）
+### Event（Blitz → JS）
 
 ```rust
-pub enum BlitzEvent {
+pub enum Event {
     Click    { node_id: usize, x: f32, y: f32 },
     KeyDown  { key: String, modifiers: u32 },
     KeyUp    { key: String, modifiers: u32 },
@@ -111,12 +111,12 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 
 pub struct JsSide {
     pub dom_tx:   Sender<DomMsg>,       // JS → Blitz：发快照 / patch
-    pub event_rx: Receiver<BlitzEvent>, // Blitz → JS：接用户事件
+    pub event_rx: Receiver<Event>, // Blitz → JS：接用户事件
 }
 
 pub struct BlitzSide {
     pub dom_rx:   Receiver<DomMsg>,     // Blitz vsync 时取消息
-    pub event_tx: Sender<BlitzEvent>,   // 投递用户事件到 JS
+    pub event_tx: Sender<Event>,   // 投递用户事件到 JS
 }
 
 pub fn create_channels() -> (JsSide, BlitzSide) { ... }
@@ -127,7 +127,7 @@ pub fn create_channels() -> (JsSide, BlitzSide) { ... }
 | 方向 | 消息 | 语义 |
 |---|---|---|
 | JS → Blitz | `DomMsg` | **最新批次优先**：vsync 时排干队列，`Patch` 按序合并，`Full` 触发后丢弃之前所有 `Patch` |
-| Blitz → JS | `BlitzEvent` | **全量投递**，事件不可丢 |
+| Blitz → JS | `Event` | **全量投递**，事件不可丢 |
 
 **Blitz vsync 消费逻辑**：
 
@@ -172,5 +172,5 @@ DOM 变更 → 记录 DomOp
 rAF 结束 → send Patch(ops)  ──Sender<DomMsg>──────→  drain → apply_full / apply_patch
 首帧      → send Full(snap)                               │
                                                           ↓
-event_rx.recv()  ←──────────Sender<BlitzEvent>─────── winit 事件
+event_rx.recv()  ←──────────Sender<Event>─────── winit 事件
 ```

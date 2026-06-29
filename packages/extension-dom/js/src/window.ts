@@ -1,9 +1,9 @@
 import { Document } from './interface/document';
 import { Node } from './interface/node';
 import { Element } from './interface/element';
+import { EventTarget } from './interface/event-target';
+import { Event, UIEvent, KeyboardEvent, MouseEvent, FocusEvent, InputEvent } from './interface/event';
 import '@/html/elements';
-
-// import { Event } from './interface/event_target';
 
 // ── Location ──────────────────────────────────────────────────────────────
 
@@ -61,6 +61,10 @@ const screen = {
   colorDepth: 24, pixelDepth: 24,
 };
 
+// ── Window-level EventTarget ──────────────────────────────────────────────
+
+const _winEvTarget = new EventTarget();
+
 // ── Window object ─────────────────────────────────────────────────────────
 
 const windowDefs: Record<string, unknown> = {
@@ -80,6 +84,13 @@ const windowDefs: Record<string, unknown> = {
   scrollY: 0,
   pageXOffset: 0,
   pageYOffset: 0,
+  Event, 
+  UIEvent, 
+  KeyboardEvent, 
+  MouseEvent, 
+  FocusEvent, 
+  InputEvent, 
+  EventTarget,
 
   // Timers — synchronous stubs; QuickJS has no event loop
   setTimeout(fn: () => void, _ms?: number): number   { fn(); return 0; },
@@ -98,10 +109,10 @@ const windowDefs: Record<string, unknown> = {
     return { getPropertyValue: () => '', display: '' } as unknown as CSSStyleDeclaration;
   },
 
-  // Window-level events (no-op: framework-level events not supported)
-  addEventListener(_type: string, _handler: unknown): void    {},
-  removeEventListener(_type: string, _handler: unknown): void {},
-  dispatchEvent(_event: Event): boolean                       { return true; },
+  // Window-level events — backed by _winEvTarget
+  addEventListener(type: string, cb: any, opts?: any): void    { _winEvTarget.addEventListener(type, cb, opts); },
+  removeEventListener(type: string, cb: any, opts?: any): void { _winEvTarget.removeEventListener(type, cb, opts); },
+  dispatchEvent(event: any): boolean                           { return _winEvTarget.dispatchEvent(event); },
 
   // Dialogs
   alert(_message?: string): void              {},
@@ -145,3 +156,5 @@ for (const key of Object.keys(windowDefs)) {
   });
 }
 _g.window = window;
+
+

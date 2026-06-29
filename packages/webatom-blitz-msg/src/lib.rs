@@ -5,7 +5,7 @@ pub mod patch;
 pub mod snapshot;
 
 pub use channel::{BlitzSide, JsSide, create_channels};
-pub use event::BlitzEvent;
+pub use event::Event;
 pub use msg::DomMsg;
 pub use patch::DomOp;
 pub use snapshot::{DomSnapshot, SnapshotNode, SnapshotNodeData};

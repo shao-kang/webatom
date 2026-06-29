@@ -56,6 +56,10 @@ class Node extends EventTarget {
     this._handle = handle;
   }
 
+  override _getParent() {
+    return this._ctx.parentNode(this._handle);
+  }
+
   // ── nodeType / nodeName ──────────────────────────────────────────────────
 
   get nodeType(): number {

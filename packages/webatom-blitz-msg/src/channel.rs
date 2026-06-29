@@ -2,29 +2,29 @@ use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
-use crate::event::BlitzEvent;
+use crate::event::Event;
 use crate::msg::DomMsg;
 
 type WakeFn = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
 
-/// JS 线程持有：发 DomMsg、收 BlitzEvent
+/// JS 线程持有：发 DomMsg、收 Event
 pub struct JsSide {
     pub dom_tx:   Sender<DomMsg>,
-    pub event_rx: Receiver<BlitzEvent>,
+    pub event_rx: Receiver<Event>,
     wake_fn: WakeFn,
 }
 
-/// Blitz 主线程持有：收 DomMsg、发 BlitzEvent
+/// Blitz 主线程持有：收 DomMsg、发 Event
 pub struct BlitzSide {
     pub dom_rx:   Receiver<DomMsg>,
-    pub event_tx: Sender<BlitzEvent>,
+    pub event_tx: Sender<Event>,
     wake_fn: WakeFn,
 }
 
 /// 创建一对 channel 端点
 pub fn create_channels() -> (JsSide, BlitzSide) {
     let (dom_tx, dom_rx)     = unbounded::<DomMsg>();
-    let (event_tx, event_rx) = unbounded::<BlitzEvent>();
+    let (event_tx, event_rx) = unbounded::<Event>();
     let wake_fn: WakeFn = Arc::new(Mutex::new(None));
     (
         JsSide   { dom_tx, event_rx, wake_fn: Arc::clone(&wake_fn) },
@@ -75,8 +75,8 @@ impl JsSide {
         }
     }
 
-    /// 事件循环 idle 阶段调用：非阻塞地取出所有待处理 BlitzEvent。
-    pub fn drain_events(&self) -> impl Iterator<Item = BlitzEvent> + '_ {
+    /// 事件循环 idle 阶段调用：非阻塞地取出所有待处理 Event。
+    pub fn drain_events(&self) -> impl Iterator<Item = Event> + '_ {
         std::iter::from_fn(|| self.event_rx.try_recv().ok())
     }
 }

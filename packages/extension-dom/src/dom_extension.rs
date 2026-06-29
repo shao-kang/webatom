@@ -42,7 +42,7 @@ impl ModuleDef for DomModule {
 /// Clone 后可安全移入 MacroTask 闭包（Arc<JsSide> 为 Send）。
 #[derive(rquickjs::JsLifetime, Clone)]
 pub struct DomExtensionState {
-    channel: Arc<JsSide>,
+    pub channel: Arc<JsSide>,
     entry: Option<Arc<HtmlEntry>>,
 }
 

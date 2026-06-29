@@ -29,6 +29,9 @@ export class DocumentContext {
 
   constructor() {
     this._docHandle = new DocumentHandle();
+    this._docHandle.onEvent((event) => {
+      console.log(JSON.stringify(event));
+    })
   }
 
   _attachRoot(doc: Node): void {
@@ -186,6 +189,26 @@ export class DocumentContext {
   createComment(data: string): NodeHandle {
     return this._docHandle.createComment(data);
   }
+
+  // ── Event bridge ─────────────────────────────────────────────────────────
+
+  /** Find the JS Node for a given webAtom numeric node id. */
+  // nodeById(id: number): Node | null {
+  //   const handle = this._docHandle.nodeById(id);
+  //   if (!handle) return null;
+  //   return this.wrap(handle);
+  // }
+
+  /**
+   * Register a callback that receives resolved Events.
+   * `target` is already a wrapped `Node` (resolved from `targetId`), or null for non-node events.
+   */
+  // onEvent(cb: (evt: { type: string; target: Node | null; key?: string; modifiers?: number; x?: number; y?: number; width?: number; height?: number }) => void): void {
+  //   this._docHandle.onEvent((raw) => {
+  //     const target = raw.targetId != null ? this.nodeById(raw.targetId) : null;
+  //     cb({ type: raw.type, target, key: raw.key, modifiers: raw.modifiers, x: raw.x, y: raw.y, width: raw.width, height: raw.height });
+  //   });
+  // }
 
   // ── Bootstrap (Document constructor only) ────────────────────────────────
 
