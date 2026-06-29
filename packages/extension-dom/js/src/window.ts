@@ -1,6 +1,7 @@
 import { Document } from './interface/document';
 import { Node } from './interface/node';
 import { Element } from './interface/element';
+import '@/html/elements';
 
 // import { Event } from './interface/event_target';
 

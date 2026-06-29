@@ -202,14 +202,11 @@ var Node = class Node extends DOMEventTarget {
 		while (child) {
 			const next = this._ctx.nextSibling(child._handle);
 			this._ctx.removeChild(this._handle, child._handle);
-			this._ctx._nodes.delete(child);
 			child = next;
 		}
 		if (value) {
 			const textHandle = this._ctx.createTextNode(value);
 			this._ctx.appendChild(this._handle, textHandle);
-			const textNode = this._ctx.wrap(textHandle);
-			this._ctx._nodes.add(textNode);
 		}
 	}
 	_collectText(h) {
@@ -224,24 +221,19 @@ var Node = class Node extends DOMEventTarget {
 	}
 	appendChild(node) {
 		this._ctx.appendChild(this._handle, node._handle);
-		this._ctx._nodes.add(node);
 		return node;
 	}
 	removeChild(child) {
 		this._ctx.removeChild(this._handle, child._handle);
-		this._ctx._nodes.delete(child);
 		return child;
 	}
 	insertBefore(node, refChild) {
 		if (refChild === null) this._ctx.appendChild(this._handle, node._handle);
 		else this._ctx.insertBefore(this._handle, node._handle, refChild._handle);
-		this._ctx._nodes.add(node);
 		return node;
 	}
 	replaceChild(node, child) {
 		this._ctx.replaceChild(this._handle, node._handle, child._handle);
-		this._ctx._nodes.add(node);
-		this._ctx._nodes.delete(child);
 		return child;
 	}
 	getRootNode(_options) {
@@ -328,11 +320,18 @@ for (const [key, value] of [...Object.entries(NODE_CONSTANTS), ...Object.entries
 //#endregion
 //#region src/html/index.ts
 const nodeRegistry = /* @__PURE__ */ new Map();
+const tagRegistry = /* @__PURE__ */ new Map();
 function registerNodeType(nodeType, factory) {
 	nodeRegistry.set(nodeType, factory);
 }
 function getNodeFactory(nodeType) {
 	return nodeRegistry.get(nodeType);
+}
+function registerTagType(tagName, factory) {
+	tagRegistry.set(tagName.toLowerCase(), factory);
+}
+function getTagFactory(tagName) {
+	return tagRegistry.get(tagName.toLowerCase());
 }
 //#endregion
 //#region src/interface/document-context.ts
@@ -351,6 +350,32 @@ var DocumentContext = class {
 		this._nodes = /* @__PURE__ */ new Set();
 		this._handleNodeMap = /* @__PURE__ */ new WeakMap();
 		this._docHandle = new DocumentHandle();
+	}
+	_attachRoot(doc) {
+		this._handleNodeMap.set(this._docHandle.documentNode(), doc);
+		this._nodes.add(doc);
+		this._initNodes();
+	}
+	_initNodes() {
+		this._traverseSubtree(this._docHandle.documentNode());
+	}
+	_traverseSubtree(h) {
+		const node = this.wrap(h);
+		if (node) this._nodes.add(node);
+		let child = this._docHandle.firstChild(h);
+		while (child) {
+			this._traverseSubtree(child);
+			child = this._docHandle.nextSibling(child);
+		}
+	}
+	_releaseSubtree(h) {
+		const node = this._handleNodeMap.get(h);
+		if (node) this._nodes.delete(node);
+		let child = this._docHandle.firstChild(h);
+		while (child) {
+			this._releaseSubtree(child);
+			child = this._docHandle.nextSibling(child);
+		}
 	}
 	nodeType(node) {
 		return this._docHandle.nodeType(node);
@@ -405,15 +430,25 @@ var DocumentContext = class {
 	}
 	appendChild(parent, child) {
 		this._docHandle.appendChild(parent, child);
+		const parentNode = this._handleNodeMap.get(parent);
+		if (parentNode && this._nodes.has(parentNode)) this._traverseSubtree(child);
 	}
 	removeChild(parent, child) {
 		this._docHandle.removeChild(parent, child);
+		const childNode = this._handleNodeMap.get(child);
+		if (childNode && this._nodes.has(childNode)) this._releaseSubtree(child);
 	}
 	insertBefore(parent, newNode, ref) {
 		this._docHandle.insertBefore(parent, newNode, ref);
+		const parentNode = this._handleNodeMap.get(parent);
+		if (parentNode && this._nodes.has(parentNode)) this._traverseSubtree(newNode);
 	}
 	replaceChild(parent, newNode, old) {
 		this._docHandle.replaceChild(parent, newNode, old);
+		const parentNode = this._handleNodeMap.get(parent);
+		if (parentNode && this._nodes.has(parentNode)) this._traverseSubtree(newNode);
+		const oldNode = this._handleNodeMap.get(old);
+		if (oldNode && this._nodes.has(oldNode)) this._releaseSubtree(old);
 	}
 	createElement(tagName) {
 		return this._docHandle.createElement(tagName);
@@ -435,8 +470,7 @@ var Document = class extends Node {
 		const ctx = new DocumentContext();
 		const docNode = ctx.documentNode();
 		super(ctx, docNode);
-		ctx._handleNodeMap.set(docNode, this);
-		ctx._nodes.add(this);
+		ctx._attachRoot(this);
 	}
 	get ownerDocument() {
 		return null;
@@ -624,7 +658,6 @@ var Element = class extends Node {
 		for (const n of nodes) if (typeof n === "string") {
 			const handle = this._ctx.createTextNode(n);
 			this._ctx.appendChild(this._handle, handle);
-			this._ctx._nodes.add(this._ctx.wrap(handle));
 		} else this.appendChild(n);
 	}
 	prepend(...nodes) {
@@ -633,7 +666,6 @@ var Element = class extends Node {
 			const handle = this._ctx.createTextNode(n);
 			if (ref) this._ctx.insertBefore(this._handle, handle, ref._handle);
 			else this._ctx.appendChild(this._handle, handle);
-			this._ctx._nodes.add(this._ctx.wrap(handle));
 		} else if (ref) this.insertBefore(n, ref);
 		else this.appendChild(n);
 	}
@@ -647,25 +679,1264 @@ var Element = class extends Node {
 		for (const n of nodes) if (typeof n === "string") {
 			const handle = this._ctx.createTextNode(n);
 			this._ctx.insertBefore(parent._handle, handle, this._handle);
-			this._ctx._nodes.add(this._ctx.wrap(handle));
-		} else {
-			this._ctx.insertBefore(parent._handle, n._handle, this._handle);
-			this._ctx._nodes.add(n);
-		}
+		} else this._ctx.insertBefore(parent._handle, n._handle, this._handle);
 		parent.removeChild(this);
 	}
 	get style() {
 		return { getPropertyValue: () => "" };
 	}
 };
-registerNodeType(Node.ELEMENT_NODE, (ctx, handle) => new Element(ctx, handle));
+registerNodeType(Node.ELEMENT_NODE, (ctx, handle) => {
+	const tagFactory = getTagFactory(ctx.tagName(handle)?.toLowerCase() ?? "");
+	return tagFactory ? tagFactory(ctx, handle) : new Element(ctx, handle);
+});
+//#endregion
+//#region src/html/html-element.ts
+var HTMLElement = class extends Element {
+	constructor(ctx, handle) {
+		super(ctx, handle);
+	}
+	get hidden() {
+		return this.hasAttribute("hidden");
+	}
+	set hidden(value) {
+		if (value) this.setAttribute("hidden", "");
+		else this.removeAttribute("hidden");
+	}
+	get title() {
+		return this.getAttribute("title") ?? "";
+	}
+	set title(value) {
+		this.setAttribute("title", value);
+	}
+	get lang() {
+		return this.getAttribute("lang") ?? "";
+	}
+	set lang(value) {
+		this.setAttribute("lang", value);
+	}
+	get dir() {
+		return this.getAttribute("dir") ?? "";
+	}
+	set dir(value) {
+		this.setAttribute("dir", value);
+	}
+	get tabIndex() {
+		return Number(this.getAttribute("tabindex") ?? -1);
+	}
+	set tabIndex(value) {
+		this.setAttribute("tabindex", String(value));
+	}
+	get draggable() {
+		return this.getAttribute("draggable") === "true";
+	}
+	set draggable(value) {
+		this.setAttribute("draggable", String(value));
+	}
+	get contentEditable() {
+		return this.getAttribute("contenteditable") ?? "inherit";
+	}
+	set contentEditable(value) {
+		this.setAttribute("contenteditable", value);
+	}
+	get isContentEditable() {
+		return this.contentEditable === "true";
+	}
+	get innerText() {
+		return this.textContent ?? "";
+	}
+	set innerText(value) {
+		this.textContent = value;
+	}
+	get innerHTML() {
+		return "";
+	}
+	set innerHTML(value) {
+		if (value === "") this.textContent = "";
+	}
+	get outerHTML() {
+		return "";
+	}
+	get offsetWidth() {
+		return 0;
+	}
+	get offsetHeight() {
+		return 0;
+	}
+	get offsetTop() {
+		return 0;
+	}
+	get offsetLeft() {
+		return 0;
+	}
+	get clientWidth() {
+		return 0;
+	}
+	get clientHeight() {
+		return 0;
+	}
+	get scrollWidth() {
+		return 0;
+	}
+	get scrollHeight() {
+		return 0;
+	}
+	get scrollTop() {
+		return 0;
+	}
+	set scrollTop(_v) {}
+	get scrollLeft() {
+		return 0;
+	}
+	set scrollLeft(_v) {}
+	getBoundingClientRect() {
+		return {
+			x: 0,
+			y: 0,
+			width: 0,
+			height: 0,
+			top: 0,
+			right: 0,
+			bottom: 0,
+			left: 0,
+			toJSON: () => ({})
+		};
+	}
+	focus(_options) {}
+	blur() {}
+	click() {
+		this.dispatchEvent(new Event("click", { bubbles: true }));
+	}
+	get dataset() {
+		return {};
+	}
+	get spellcheck() {
+		return this.getAttribute("spellcheck") !== "false";
+	}
+	set spellcheck(v) {
+		this.setAttribute("spellcheck", String(v));
+	}
+	get autocapitalize() {
+		return this.getAttribute("autocapitalize") ?? "";
+	}
+	set autocapitalize(v) {
+		this.setAttribute("autocapitalize", v);
+	}
+};
+//#endregion
+//#region src/html/elements.ts
+var HTMLDivElement = class extends HTMLElement {};
+var HTMLSpanElement = class extends HTMLElement {};
+var HTMLParagraphElement = class extends HTMLElement {};
+var HTMLHeadingElement = class extends HTMLElement {};
+var HTMLUListElement = class extends HTMLElement {};
+var HTMLPreElement = class extends HTMLElement {};
+var HTMLHRElement = class extends HTMLElement {};
+var HTMLBRElement = class extends HTMLElement {};
+var HTMLBodyElement = class extends HTMLElement {};
+var HTMLHeadElement = class extends HTMLElement {};
+var HTMLHtmlElement = class extends HTMLElement {};
+var HTMLOListElement = class extends HTMLElement {
+	get reversed() {
+		return this.hasAttribute("reversed");
+	}
+	set reversed(v) {
+		v ? this.setAttribute("reversed", "") : this.removeAttribute("reversed");
+	}
+	get start() {
+		return Number(this.getAttribute("start") ?? 1);
+	}
+	set start(v) {
+		this.setAttribute("start", String(v));
+	}
+	get type() {
+		return this.getAttribute("type") ?? "";
+	}
+	set type(v) {
+		this.setAttribute("type", v);
+	}
+};
+var HTMLLIElement = class extends HTMLElement {
+	get value() {
+		return Number(this.getAttribute("value") ?? 0);
+	}
+	set value(v) {
+		this.setAttribute("value", String(v));
+	}
+};
+var HTMLQuoteElement = class extends HTMLElement {
+	get cite() {
+		return this.getAttribute("cite") ?? "";
+	}
+	set cite(v) {
+		this.setAttribute("cite", v);
+	}
+};
+var HTMLAnchorElement = class extends HTMLElement {
+	get href() {
+		return this.getAttribute("href") ?? "";
+	}
+	set href(v) {
+		this.setAttribute("href", v);
+	}
+	get target() {
+		return this.getAttribute("target") ?? "";
+	}
+	set target(v) {
+		this.setAttribute("target", v);
+	}
+	get rel() {
+		return this.getAttribute("rel") ?? "";
+	}
+	set rel(v) {
+		this.setAttribute("rel", v);
+	}
+	get download() {
+		return this.getAttribute("download") ?? "";
+	}
+	set download(v) {
+		this.setAttribute("download", v);
+	}
+	get text() {
+		return this.textContent ?? "";
+	}
+	get hash() {
+		try {
+			return new URL(this.href).hash;
+		} catch {
+			return "";
+		}
+	}
+	get hostname() {
+		try {
+			return new URL(this.href).hostname;
+		} catch {
+			return "";
+		}
+	}
+	get pathname() {
+		try {
+			return new URL(this.href).pathname;
+		} catch {
+			return "";
+		}
+	}
+};
+var HTMLImageElement = class extends HTMLElement {
+	get src() {
+		return this.getAttribute("src") ?? "";
+	}
+	set src(v) {
+		this.setAttribute("src", v);
+	}
+	get alt() {
+		return this.getAttribute("alt") ?? "";
+	}
+	set alt(v) {
+		this.setAttribute("alt", v);
+	}
+	get width() {
+		return Number(this.getAttribute("width") ?? 0);
+	}
+	set width(v) {
+		this.setAttribute("width", String(v));
+	}
+	get height() {
+		return Number(this.getAttribute("height") ?? 0);
+	}
+	set height(v) {
+		this.setAttribute("height", String(v));
+	}
+	get naturalWidth() {
+		return 0;
+	}
+	get naturalHeight() {
+		return 0;
+	}
+	get complete() {
+		return true;
+	}
+	get loading() {
+		return this.getAttribute("loading") ?? "eager";
+	}
+	set loading(v) {
+		this.setAttribute("loading", v);
+	}
+};
+var HTMLInputElement = class extends HTMLElement {
+	get type() {
+		return this.getAttribute("type") ?? "text";
+	}
+	set type(v) {
+		this.setAttribute("type", v);
+	}
+	get name() {
+		return this.getAttribute("name") ?? "";
+	}
+	set name(v) {
+		this.setAttribute("name", v);
+	}
+	get value() {
+		return this.getAttribute("value") ?? "";
+	}
+	set value(v) {
+		this.setAttribute("value", v);
+	}
+	get defaultValue() {
+		return this.getAttribute("value") ?? "";
+	}
+	get checked() {
+		return this.hasAttribute("checked");
+	}
+	set checked(v) {
+		v ? this.setAttribute("checked", "") : this.removeAttribute("checked");
+	}
+	get defaultChecked() {
+		return this.hasAttribute("checked");
+	}
+	get disabled() {
+		return this.hasAttribute("disabled");
+	}
+	set disabled(v) {
+		v ? this.setAttribute("disabled", "") : this.removeAttribute("disabled");
+	}
+	get readOnly() {
+		return this.hasAttribute("readonly");
+	}
+	set readOnly(v) {
+		v ? this.setAttribute("readonly", "") : this.removeAttribute("readonly");
+	}
+	get required() {
+		return this.hasAttribute("required");
+	}
+	set required(v) {
+		v ? this.setAttribute("required", "") : this.removeAttribute("required");
+	}
+	get placeholder() {
+		return this.getAttribute("placeholder") ?? "";
+	}
+	set placeholder(v) {
+		this.setAttribute("placeholder", v);
+	}
+	get min() {
+		return this.getAttribute("min") ?? "";
+	}
+	set min(v) {
+		this.setAttribute("min", v);
+	}
+	get max() {
+		return this.getAttribute("max") ?? "";
+	}
+	set max(v) {
+		this.setAttribute("max", v);
+	}
+	get step() {
+		return this.getAttribute("step") ?? "";
+	}
+	set step(v) {
+		this.setAttribute("step", v);
+	}
+	get multiple() {
+		return this.hasAttribute("multiple");
+	}
+	set multiple(v) {
+		v ? this.setAttribute("multiple", "") : this.removeAttribute("multiple");
+	}
+	get maxLength() {
+		return Number(this.getAttribute("maxlength") ?? -1);
+	}
+	set maxLength(v) {
+		this.setAttribute("maxlength", String(v));
+	}
+	get minLength() {
+		return Number(this.getAttribute("minlength") ?? -1);
+	}
+	set minLength(v) {
+		this.setAttribute("minlength", String(v));
+	}
+	get size() {
+		return Number(this.getAttribute("size") ?? 20);
+	}
+	set size(v) {
+		this.setAttribute("size", String(v));
+	}
+	get pattern() {
+		return this.getAttribute("pattern") ?? "";
+	}
+	set pattern(v) {
+		this.setAttribute("pattern", v);
+	}
+	get accept() {
+		return this.getAttribute("accept") ?? "";
+	}
+	set accept(v) {
+		this.setAttribute("accept", v);
+	}
+	get autofocus() {
+		return this.hasAttribute("autofocus");
+	}
+	set autofocus(v) {
+		v ? this.setAttribute("autofocus", "") : this.removeAttribute("autofocus");
+	}
+	select() {}
+	checkValidity() {
+		return true;
+	}
+	reportValidity() {
+		return true;
+	}
+	setCustomValidity(_error) {}
+};
+var HTMLButtonElement = class extends HTMLElement {
+	get type() {
+		return this.getAttribute("type") ?? "submit";
+	}
+	set type(v) {
+		this.setAttribute("type", v);
+	}
+	get name() {
+		return this.getAttribute("name") ?? "";
+	}
+	set name(v) {
+		this.setAttribute("name", v);
+	}
+	get value() {
+		return this.getAttribute("value") ?? "";
+	}
+	set value(v) {
+		this.setAttribute("value", v);
+	}
+	get disabled() {
+		return this.hasAttribute("disabled");
+	}
+	set disabled(v) {
+		v ? this.setAttribute("disabled", "") : this.removeAttribute("disabled");
+	}
+	get autofocus() {
+		return this.hasAttribute("autofocus");
+	}
+	set autofocus(v) {
+		v ? this.setAttribute("autofocus", "") : this.removeAttribute("autofocus");
+	}
+	checkValidity() {
+		return true;
+	}
+};
+var HTMLFormElement = class extends HTMLElement {
+	get action() {
+		return this.getAttribute("action") ?? "";
+	}
+	set action(v) {
+		this.setAttribute("action", v);
+	}
+	get method() {
+		return this.getAttribute("method") ?? "get";
+	}
+	set method(v) {
+		this.setAttribute("method", v);
+	}
+	get enctype() {
+		return this.getAttribute("enctype") ?? "application/x-www-form-urlencoded";
+	}
+	set enctype(v) {
+		this.setAttribute("enctype", v);
+	}
+	get name() {
+		return this.getAttribute("name") ?? "";
+	}
+	set name(v) {
+		this.setAttribute("name", v);
+	}
+	get noValidate() {
+		return this.hasAttribute("novalidate");
+	}
+	set noValidate(v) {
+		v ? this.setAttribute("novalidate", "") : this.removeAttribute("novalidate");
+	}
+	get target() {
+		return this.getAttribute("target") ?? "";
+	}
+	set target(v) {
+		this.setAttribute("target", v);
+	}
+	submit() {
+		this.dispatchEvent(new Event("submit", {
+			bubbles: true,
+			cancelable: true
+		}));
+	}
+	reset() {
+		this.dispatchEvent(new Event("reset", {
+			bubbles: true,
+			cancelable: true
+		}));
+	}
+	checkValidity() {
+		return true;
+	}
+	reportValidity() {
+		return true;
+	}
+};
+var HTMLTextAreaElement = class extends HTMLElement {
+	get name() {
+		return this.getAttribute("name") ?? "";
+	}
+	set name(v) {
+		this.setAttribute("name", v);
+	}
+	get value() {
+		return this.textContent ?? "";
+	}
+	set value(v) {
+		this.textContent = v;
+	}
+	get rows() {
+		return Number(this.getAttribute("rows") ?? 2);
+	}
+	set rows(v) {
+		this.setAttribute("rows", String(v));
+	}
+	get cols() {
+		return Number(this.getAttribute("cols") ?? 20);
+	}
+	set cols(v) {
+		this.setAttribute("cols", String(v));
+	}
+	get disabled() {
+		return this.hasAttribute("disabled");
+	}
+	set disabled(v) {
+		v ? this.setAttribute("disabled", "") : this.removeAttribute("disabled");
+	}
+	get readOnly() {
+		return this.hasAttribute("readonly");
+	}
+	set readOnly(v) {
+		v ? this.setAttribute("readonly", "") : this.removeAttribute("readonly");
+	}
+	get required() {
+		return this.hasAttribute("required");
+	}
+	set required(v) {
+		v ? this.setAttribute("required", "") : this.removeAttribute("required");
+	}
+	get placeholder() {
+		return this.getAttribute("placeholder") ?? "";
+	}
+	set placeholder(v) {
+		this.setAttribute("placeholder", v);
+	}
+	get maxLength() {
+		return Number(this.getAttribute("maxlength") ?? -1);
+	}
+	set maxLength(v) {
+		this.setAttribute("maxlength", String(v));
+	}
+	get minLength() {
+		return Number(this.getAttribute("minlength") ?? -1);
+	}
+	set minLength(v) {
+		this.setAttribute("minlength", String(v));
+	}
+	get wrap() {
+		return this.getAttribute("wrap") ?? "soft";
+	}
+	set wrap(v) {
+		this.setAttribute("wrap", v);
+	}
+	get defaultValue() {
+		return this.textContent ?? "";
+	}
+	select() {}
+	checkValidity() {
+		return true;
+	}
+	reportValidity() {
+		return true;
+	}
+	setCustomValidity(_error) {}
+};
+var HTMLSelectElement = class extends HTMLElement {
+	get name() {
+		return this.getAttribute("name") ?? "";
+	}
+	set name(v) {
+		this.setAttribute("name", v);
+	}
+	get disabled() {
+		return this.hasAttribute("disabled");
+	}
+	set disabled(v) {
+		v ? this.setAttribute("disabled", "") : this.removeAttribute("disabled");
+	}
+	get multiple() {
+		return this.hasAttribute("multiple");
+	}
+	set multiple(v) {
+		v ? this.setAttribute("multiple", "") : this.removeAttribute("multiple");
+	}
+	get size() {
+		return Number(this.getAttribute("size") ?? 0);
+	}
+	set size(v) {
+		this.setAttribute("size", String(v));
+	}
+	get required() {
+		return this.hasAttribute("required");
+	}
+	set required(v) {
+		v ? this.setAttribute("required", "") : this.removeAttribute("required");
+	}
+	get autofocus() {
+		return this.hasAttribute("autofocus");
+	}
+	set autofocus(v) {
+		v ? this.setAttribute("autofocus", "") : this.removeAttribute("autofocus");
+	}
+	get length() {
+		return this.children.filter((c) => c.localName === "option").length;
+	}
+	get selectedIndex() {
+		return -1;
+	}
+	get value() {
+		return "";
+	}
+	set value(_v) {}
+	checkValidity() {
+		return true;
+	}
+	reportValidity() {
+		return true;
+	}
+};
+var HTMLOptionElement = class extends HTMLElement {
+	get value() {
+		return this.getAttribute("value") ?? this.textContent ?? "";
+	}
+	set value(v) {
+		this.setAttribute("value", v);
+	}
+	get label() {
+		return this.getAttribute("label") ?? this.textContent ?? "";
+	}
+	set label(v) {
+		this.setAttribute("label", v);
+	}
+	get selected() {
+		return this.hasAttribute("selected");
+	}
+	set selected(v) {
+		v ? this.setAttribute("selected", "") : this.removeAttribute("selected");
+	}
+	get defaultSelected() {
+		return this.hasAttribute("selected");
+	}
+	get disabled() {
+		return this.hasAttribute("disabled");
+	}
+	set disabled(v) {
+		v ? this.setAttribute("disabled", "") : this.removeAttribute("disabled");
+	}
+	get text() {
+		return this.textContent ?? "";
+	}
+	get index() {
+		return 0;
+	}
+};
+var HTMLOptGroupElement = class extends HTMLElement {
+	get label() {
+		return this.getAttribute("label") ?? "";
+	}
+	set label(v) {
+		this.setAttribute("label", v);
+	}
+	get disabled() {
+		return this.hasAttribute("disabled");
+	}
+	set disabled(v) {
+		v ? this.setAttribute("disabled", "") : this.removeAttribute("disabled");
+	}
+};
+var HTMLLabelElement = class extends HTMLElement {
+	get htmlFor() {
+		return this.getAttribute("for") ?? "";
+	}
+	set htmlFor(v) {
+		this.setAttribute("for", v);
+	}
+};
+var HTMLScriptElement = class extends HTMLElement {
+	get src() {
+		return this.getAttribute("src") ?? "";
+	}
+	set src(v) {
+		this.setAttribute("src", v);
+	}
+	get type() {
+		return this.getAttribute("type") ?? "";
+	}
+	set type(v) {
+		this.setAttribute("type", v);
+	}
+	get async() {
+		return this.hasAttribute("async");
+	}
+	set async(v) {
+		v ? this.setAttribute("async", "") : this.removeAttribute("async");
+	}
+	get defer() {
+		return this.hasAttribute("defer");
+	}
+	set defer(v) {
+		v ? this.setAttribute("defer", "") : this.removeAttribute("defer");
+	}
+	get noModule() {
+		return this.hasAttribute("nomodule");
+	}
+	set noModule(v) {
+		v ? this.setAttribute("nomodule", "") : this.removeAttribute("nomodule");
+	}
+	get crossOrigin() {
+		return this.getAttribute("crossorigin");
+	}
+	set crossOrigin(v) {
+		v === null ? this.removeAttribute("crossorigin") : this.setAttribute("crossorigin", v);
+	}
+	get text() {
+		return this.textContent ?? "";
+	}
+	set text(v) {
+		this.textContent = v;
+	}
+	get charset() {
+		return this.getAttribute("charset") ?? "";
+	}
+	set charset(v) {
+		this.setAttribute("charset", v);
+	}
+};
+var HTMLLinkElement = class extends HTMLElement {
+	get href() {
+		return this.getAttribute("href") ?? "";
+	}
+	set href(v) {
+		this.setAttribute("href", v);
+	}
+	get rel() {
+		return this.getAttribute("rel") ?? "";
+	}
+	set rel(v) {
+		this.setAttribute("rel", v);
+	}
+	get type() {
+		return this.getAttribute("type") ?? "";
+	}
+	set type(v) {
+		this.setAttribute("type", v);
+	}
+	get media() {
+		return this.getAttribute("media") ?? "";
+	}
+	set media(v) {
+		this.setAttribute("media", v);
+	}
+	get as() {
+		return this.getAttribute("as") ?? "";
+	}
+	set as(v) {
+		this.setAttribute("as", v);
+	}
+	get crossOrigin() {
+		return this.getAttribute("crossorigin");
+	}
+	set crossOrigin(v) {
+		v === null ? this.removeAttribute("crossorigin") : this.setAttribute("crossorigin", v);
+	}
+	get disabled() {
+		return this.hasAttribute("disabled");
+	}
+	set disabled(v) {
+		v ? this.setAttribute("disabled", "") : this.removeAttribute("disabled");
+	}
+};
+var HTMLMetaElement = class extends HTMLElement {
+	get name() {
+		return this.getAttribute("name") ?? "";
+	}
+	set name(v) {
+		this.setAttribute("name", v);
+	}
+	get content() {
+		return this.getAttribute("content") ?? "";
+	}
+	set content(v) {
+		this.setAttribute("content", v);
+	}
+	get httpEquiv() {
+		return this.getAttribute("http-equiv") ?? "";
+	}
+	set httpEquiv(v) {
+		this.setAttribute("http-equiv", v);
+	}
+	get charset() {
+		return this.getAttribute("charset") ?? "";
+	}
+	set charset(v) {
+		this.setAttribute("charset", v);
+	}
+};
+var HTMLTitleElement = class extends HTMLElement {
+	get text() {
+		return this.textContent ?? "";
+	}
+	set text(v) {
+		this.textContent = v;
+	}
+};
+var HTMLStyleElement = class extends HTMLElement {
+	get media() {
+		return this.getAttribute("media") ?? "";
+	}
+	set media(v) {
+		this.setAttribute("media", v);
+	}
+	get type() {
+		return this.getAttribute("type") ?? "";
+	}
+	set type(v) {
+		this.setAttribute("type", v);
+	}
+};
+var HTMLTableElement = class extends HTMLElement {
+	get rows() {
+		const rows = [];
+		for (const child of this.children) if ([
+			"thead",
+			"tbody",
+			"tfoot"
+		].includes(child.localName)) rows.push(...child.children.filter((c) => c.localName === "tr"));
+		else if (child.localName === "tr") rows.push(child);
+		return rows;
+	}
+	get caption() {
+		return this.children.find((c) => c.localName === "caption") ?? null;
+	}
+};
+var HTMLTableSectionElement = class extends HTMLElement {
+	get rows() {
+		return this.children.filter((c) => c.localName === "tr");
+	}
+};
+var HTMLTableRowElement = class extends HTMLElement {
+	get cells() {
+		return this.children.filter((c) => c.localName === "td" || c.localName === "th");
+	}
+	get rowIndex() {
+		return -1;
+	}
+	get sectionRowIndex() {
+		return -1;
+	}
+};
+var HTMLTableCellElement = class extends HTMLElement {
+	get colSpan() {
+		return Number(this.getAttribute("colspan") ?? 1);
+	}
+	set colSpan(v) {
+		this.setAttribute("colspan", String(v));
+	}
+	get rowSpan() {
+		return Number(this.getAttribute("rowspan") ?? 1);
+	}
+	set rowSpan(v) {
+		this.setAttribute("rowspan", String(v));
+	}
+	get headers() {
+		return this.getAttribute("headers") ?? "";
+	}
+	set headers(v) {
+		this.setAttribute("headers", v);
+	}
+	get abbr() {
+		return this.getAttribute("abbr") ?? "";
+	}
+	set abbr(v) {
+		this.setAttribute("abbr", v);
+	}
+	get cellIndex() {
+		return -1;
+	}
+};
+var HTMLTableColElement = class extends HTMLElement {
+	get span() {
+		return Number(this.getAttribute("span") ?? 1);
+	}
+	set span(v) {
+		this.setAttribute("span", String(v));
+	}
+};
+var HTMLTableCaptionElement = class extends HTMLElement {};
+var HTMLMediaElement = class extends HTMLElement {
+	get src() {
+		return this.getAttribute("src") ?? "";
+	}
+	set src(v) {
+		this.setAttribute("src", v);
+	}
+	get currentTime() {
+		return 0;
+	}
+	set currentTime(_v) {}
+	get duration() {
+		return NaN;
+	}
+	get paused() {
+		return true;
+	}
+	get ended() {
+		return false;
+	}
+	get seeking() {
+		return false;
+	}
+	get muted() {
+		return this.hasAttribute("muted");
+	}
+	set muted(v) {
+		v ? this.setAttribute("muted", "") : this.removeAttribute("muted");
+	}
+	get volume() {
+		return 1;
+	}
+	set volume(_v) {}
+	get autoplay() {
+		return this.hasAttribute("autoplay");
+	}
+	set autoplay(v) {
+		v ? this.setAttribute("autoplay", "") : this.removeAttribute("autoplay");
+	}
+	get loop() {
+		return this.hasAttribute("loop");
+	}
+	set loop(v) {
+		v ? this.setAttribute("loop", "") : this.removeAttribute("loop");
+	}
+	get controls() {
+		return this.hasAttribute("controls");
+	}
+	set controls(v) {
+		v ? this.setAttribute("controls", "") : this.removeAttribute("controls");
+	}
+	get readyState() {
+		return 0;
+	}
+	get networkState() {
+		return 0;
+	}
+	get playbackRate() {
+		return 1;
+	}
+	set playbackRate(_v) {}
+	play() {
+		return Promise.resolve();
+	}
+	pause() {}
+	load() {}
+	canPlayType(_type) {
+		return "";
+	}
+};
+var HTMLVideoElement = class extends HTMLMediaElement {
+	get width() {
+		return Number(this.getAttribute("width") ?? 0);
+	}
+	set width(v) {
+		this.setAttribute("width", String(v));
+	}
+	get height() {
+		return Number(this.getAttribute("height") ?? 0);
+	}
+	set height(v) {
+		this.setAttribute("height", String(v));
+	}
+	get videoWidth() {
+		return 0;
+	}
+	get videoHeight() {
+		return 0;
+	}
+	get poster() {
+		return this.getAttribute("poster") ?? "";
+	}
+	set poster(v) {
+		this.setAttribute("poster", v);
+	}
+};
+var HTMLAudioElement = class extends HTMLMediaElement {};
+var HTMLCanvasElement = class extends HTMLElement {
+	get width() {
+		return Number(this.getAttribute("width") ?? 300);
+	}
+	set width(v) {
+		this.setAttribute("width", String(v));
+	}
+	get height() {
+		return Number(this.getAttribute("height") ?? 150);
+	}
+	set height(v) {
+		this.setAttribute("height", String(v));
+	}
+	getContext(_contextId) {
+		return null;
+	}
+	toDataURL(_type) {
+		return "";
+	}
+};
+var HTMLIFrameElement = class extends HTMLElement {
+	get src() {
+		return this.getAttribute("src") ?? "";
+	}
+	set src(v) {
+		this.setAttribute("src", v);
+	}
+	get width() {
+		return this.getAttribute("width") ?? "";
+	}
+	set width(v) {
+		this.setAttribute("width", v);
+	}
+	get height() {
+		return this.getAttribute("height") ?? "";
+	}
+	set height(v) {
+		this.setAttribute("height", v);
+	}
+	get name() {
+		return this.getAttribute("name") ?? "";
+	}
+	set name(v) {
+		this.setAttribute("name", v);
+	}
+	get allow() {
+		return this.getAttribute("allow") ?? "";
+	}
+	set allow(v) {
+		this.setAttribute("allow", v);
+	}
+	get sandbox() {
+		return this.getAttribute("sandbox") ?? "";
+	}
+	get contentDocument() {
+		return null;
+	}
+	get contentWindow() {
+		return null;
+	}
+};
+var HTMLProgressElement = class extends HTMLElement {
+	get value() {
+		return Number(this.getAttribute("value") ?? 0);
+	}
+	set value(v) {
+		this.setAttribute("value", String(v));
+	}
+	get max() {
+		return Number(this.getAttribute("max") ?? 1);
+	}
+	set max(v) {
+		this.setAttribute("max", String(v));
+	}
+	get position() {
+		const m = this.max;
+		return m > 0 ? this.value / m : -1;
+	}
+};
+var HTMLMeterElement = class extends HTMLElement {
+	get value() {
+		return Number(this.getAttribute("value") ?? 0);
+	}
+	set value(v) {
+		this.setAttribute("value", String(v));
+	}
+	get min() {
+		return Number(this.getAttribute("min") ?? 0);
+	}
+	set min(v) {
+		this.setAttribute("min", String(v));
+	}
+	get max() {
+		return Number(this.getAttribute("max") ?? 1);
+	}
+	set max(v) {
+		this.setAttribute("max", String(v));
+	}
+	get low() {
+		return Number(this.getAttribute("low") ?? this.min);
+	}
+	set low(v) {
+		this.setAttribute("low", String(v));
+	}
+	get high() {
+		return Number(this.getAttribute("high") ?? this.max);
+	}
+	set high(v) {
+		this.setAttribute("high", String(v));
+	}
+	get optimum() {
+		return Number(this.getAttribute("optimum") ?? (this.min + this.max) / 2);
+	}
+	set optimum(v) {
+		this.setAttribute("optimum", String(v));
+	}
+};
+var HTMLDetailsElement = class extends HTMLElement {
+	get open() {
+		return this.hasAttribute("open");
+	}
+	set open(v) {
+		v ? this.setAttribute("open", "") : this.removeAttribute("open");
+	}
+};
+var HTMLDialogElement = class extends HTMLElement {
+	constructor(..._args) {
+		super(..._args);
+		this._returnValue = "";
+	}
+	get open() {
+		return this.hasAttribute("open");
+	}
+	get returnValue() {
+		return this._returnValue;
+	}
+	set returnValue(v) {
+		this._returnValue = v;
+	}
+	show() {
+		this.setAttribute("open", "");
+	}
+	showModal() {
+		this.setAttribute("open", "");
+	}
+	close(returnValue) {
+		if (returnValue !== void 0) this._returnValue = returnValue;
+		this.removeAttribute("open");
+	}
+};
+const TAG_MAP = [
+	[["div"], HTMLDivElement],
+	[["span"], HTMLSpanElement],
+	[["p"], HTMLParagraphElement],
+	[[
+		"h1",
+		"h2",
+		"h3",
+		"h4",
+		"h5",
+		"h6"
+	], HTMLHeadingElement],
+	[["ul"], HTMLUListElement],
+	[["ol"], HTMLOListElement],
+	[["li"], HTMLLIElement],
+	[["pre"], HTMLPreElement],
+	[["blockquote", "q"], HTMLQuoteElement],
+	[["hr"], HTMLHRElement],
+	[["br"], HTMLBRElement],
+	[["body"], HTMLBodyElement],
+	[["head"], HTMLHeadElement],
+	[["html"], HTMLHtmlElement],
+	[["a"], HTMLAnchorElement],
+	[["img"], HTMLImageElement],
+	[["input"], HTMLInputElement],
+	[["button"], HTMLButtonElement],
+	[["form"], HTMLFormElement],
+	[["textarea"], HTMLTextAreaElement],
+	[["select"], HTMLSelectElement],
+	[["option"], HTMLOptionElement],
+	[["optgroup"], HTMLOptGroupElement],
+	[["label"], HTMLLabelElement],
+	[["script"], HTMLScriptElement],
+	[["link"], HTMLLinkElement],
+	[["meta"], HTMLMetaElement],
+	[["title"], HTMLTitleElement],
+	[["style"], HTMLStyleElement],
+	[["table"], HTMLTableElement],
+	[[
+		"thead",
+		"tbody",
+		"tfoot"
+	], HTMLTableSectionElement],
+	[["tr"], HTMLTableRowElement],
+	[["td", "th"], HTMLTableCellElement],
+	[["col", "colgroup"], HTMLTableColElement],
+	[["caption"], HTMLTableCaptionElement],
+	[["video"], HTMLVideoElement],
+	[["audio"], HTMLAudioElement],
+	[["canvas"], HTMLCanvasElement],
+	[["iframe"], HTMLIFrameElement],
+	[["progress"], HTMLProgressElement],
+	[["meter"], HTMLMeterElement],
+	[["details"], HTMLDetailsElement],
+	[["dialog"], HTMLDialogElement],
+	[[
+		"section",
+		"article",
+		"header",
+		"footer",
+		"main",
+		"nav",
+		"aside",
+		"figure",
+		"figcaption",
+		"summary",
+		"address",
+		"em",
+		"strong",
+		"small",
+		"sub",
+		"sup",
+		"mark",
+		"i",
+		"b",
+		"u",
+		"s",
+		"del",
+		"ins",
+		"code",
+		"kbd",
+		"samp",
+		"var",
+		"cite",
+		"abbr",
+		"dfn",
+		"time",
+		"data",
+		"wbr",
+		"dl",
+		"dt",
+		"dd",
+		"fieldset",
+		"legend",
+		"output",
+		"datalist",
+		"picture",
+		"source",
+		"track",
+		"map",
+		"area",
+		"template",
+		"slot",
+		"noscript"
+	], HTMLElement]
+];
+for (const [tags, Ctor] of TAG_MAP) for (const tag of tags) registerTagType(tag, (ctx, handle) => new Ctor(ctx, handle));
 //#endregion
 //#region src/window.ts
 const windowDefs = {
-	Document,
 	document: new Document(),
-	Node,
-	Element,
 	location: {
 		href: "",
 		hostname: "",

@@ -3,7 +3,7 @@
 import { Node } from './node';
 import type { DocumentContext } from './document-context';
 import type { NodeHandle } from './native';
-import { registerNodeType } from '@/html/index';
+import { registerNodeType, getTagFactory } from '@/html/index';
 
 // Minimal classList shim backed by className string
 class DOMTokenList {
@@ -169,7 +169,6 @@ export class Element extends Node {
       if (typeof n === 'string') {
         const handle = this._ctx.createTextNode(n);
         this._ctx.appendChild(this._handle, handle);
-        this._ctx._nodes.add(this._ctx.wrap(handle)!);
       } else {
         this.appendChild(n);
       }
@@ -186,7 +185,6 @@ export class Element extends Node {
         } else {
           this._ctx.appendChild(this._handle, handle);
         }
-        this._ctx._nodes.add(this._ctx.wrap(handle)!);
       } else {
         if (ref) {
           this.insertBefore(n, ref);
@@ -209,10 +207,8 @@ export class Element extends Node {
       if (typeof n === 'string') {
         const handle = this._ctx.createTextNode(n);
         this._ctx.insertBefore(parent._handle, handle, this._handle);
-        this._ctx._nodes.add(this._ctx.wrap(handle)!);
       } else {
         this._ctx.insertBefore(parent._handle, n._handle, this._handle);
-        this._ctx._nodes.add(n);
       }
     }
     parent.removeChild(this);
@@ -225,5 +221,9 @@ export class Element extends Node {
   }
 }
 
-// Register factory so DocumentContext.wrap() returns Element for element nodes
-registerNodeType(Node.ELEMENT_NODE, (ctx, handle) => new Element(ctx, handle));
+// Register factory: dispatch to HTML element subclass by tagName, fallback to Element
+registerNodeType(Node.ELEMENT_NODE, (ctx, handle) => {
+  const tag = ctx.tagName(handle)?.toLowerCase() ?? '';
+  const tagFactory = getTagFactory(tag);
+  return tagFactory ? tagFactory(ctx, handle) : new Element(ctx, handle);
+});

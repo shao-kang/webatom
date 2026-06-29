@@ -31,6 +31,36 @@ export class DocumentContext {
     this._docHandle = new DocumentHandle();
   }
 
+  _attachRoot(doc: Node): void {
+    this._handleNodeMap.set(this._docHandle.documentNode(), doc);
+    this._nodes.add(doc);
+    this._initNodes();
+  }
+
+  _initNodes(): void {
+    this._traverseSubtree(this._docHandle.documentNode());
+  }
+
+  _traverseSubtree(h: NodeHandle): void {
+    const node = this.wrap(h);
+    if (node) this._nodes.add(node);
+    let child = this._docHandle.firstChild(h);
+    while (child) {
+      this._traverseSubtree(child);
+      child = this._docHandle.nextSibling(child);
+    }
+  }
+
+  _releaseSubtree(h: NodeHandle): void {
+    const node = this._handleNodeMap.get(h);
+    if (node) this._nodes.delete(node);
+    let child = this._docHandle.firstChild(h);
+    while (child) {
+      this._releaseSubtree(child);
+      child = this._docHandle.nextSibling(child);
+    }
+  }
+
   // ── Scalar queries (no wrapping) ─────────────────────────────────────────
 
   nodeType(node: NodeHandle): number {
@@ -105,22 +135,42 @@ export class DocumentContext {
     return this.wrap(this._docHandle.head());
   }
 
-  // ── Tree mutation (NodeHandle args; _nodes managed by Node layer) ─────────
+  // ── Tree mutation ────────────────────────────────────────────────────────
 
   appendChild(parent: NodeHandle, child: NodeHandle): void {
     this._docHandle.appendChild(parent, child);
+    const parentNode = this._handleNodeMap.get(parent);
+    if (parentNode && this._nodes.has(parentNode)) {
+      this._traverseSubtree(child);
+    }
   }
 
   removeChild(parent: NodeHandle, child: NodeHandle): void {
     this._docHandle.removeChild(parent, child);
+    const childNode = this._handleNodeMap.get(child);
+    if (childNode && this._nodes.has(childNode)) {
+      this._releaseSubtree(child);
+    }
   }
 
   insertBefore(parent: NodeHandle, newNode: NodeHandle, ref: NodeHandle): void {
     this._docHandle.insertBefore(parent, newNode, ref);
+    const parentNode = this._handleNodeMap.get(parent);
+    if (parentNode && this._nodes.has(parentNode)) {
+      this._traverseSubtree(newNode);
+    }
   }
 
   replaceChild(parent: NodeHandle, newNode: NodeHandle, old: NodeHandle): void {
     this._docHandle.replaceChild(parent, newNode, old);
+    const parentNode = this._handleNodeMap.get(parent);
+    if (parentNode && this._nodes.has(parentNode)) {
+      this._traverseSubtree(newNode);
+    }
+    const oldNode = this._handleNodeMap.get(old);
+    if (oldNode && this._nodes.has(oldNode)) {
+      this._releaseSubtree(old);
+    }
   }
 
   // ── Node creation (returns NodeHandle — detached, not in _nodes) ──────────

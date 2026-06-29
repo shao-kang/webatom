@@ -4928,6 +4928,7 @@ dependencies = [
  "crossbeam-channel",
  "markup5ever 0.39.0",
  "tokio",
+ "tracing",
  "tracing-subscriber",
  "webatom-blitz-msg",
  "webatom-js-runtime",

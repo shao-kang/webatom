@@ -128,14 +128,11 @@ class Node extends EventTarget {
     while (child) {
       const next = this._ctx.nextSibling(child._handle);
       this._ctx.removeChild(this._handle, child._handle);
-      this._ctx._nodes.delete(child);
       child = next;
     }
     if (value) {
       const textHandle = this._ctx.createTextNode(value);
       this._ctx.appendChild(this._handle, textHandle);
-      const textNode = this._ctx.wrap(textHandle)!;
-      this._ctx._nodes.add(textNode);
     }
   }
 
@@ -156,13 +153,11 @@ class Node extends EventTarget {
 
   appendChild<T extends Node>(node: T): T {
     this._ctx.appendChild(this._handle, node._handle);
-    this._ctx._nodes.add(node);
     return node;
   }
 
   removeChild<T extends Node>(child: T): T {
     this._ctx.removeChild(this._handle, child._handle);
-    this._ctx._nodes.delete(child);
     return child;
   }
 
@@ -172,14 +167,11 @@ class Node extends EventTarget {
     } else {
       this._ctx.insertBefore(this._handle, node._handle, refChild._handle);
     }
-    this._ctx._nodes.add(node);
     return node;
   }
 
   replaceChild<T extends Node>(node: Node, child: T): T {
     this._ctx.replaceChild(this._handle, node._handle, child._handle);
-    this._ctx._nodes.add(node);
-    this._ctx._nodes.delete(child);
     return child;
   }
 

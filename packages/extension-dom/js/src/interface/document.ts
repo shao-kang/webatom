@@ -10,8 +10,7 @@ export class Document extends Node {
     const docNode = ctx.documentNode();
     super(ctx, docNode);
     // Register the document node so wrapHandleWith returns this instance
-    ctx._handleNodeMap.set(docNode, this);
-    ctx._nodes.add(this);
+    ctx._attachRoot(this);
   }
 
   override get ownerDocument(): null {

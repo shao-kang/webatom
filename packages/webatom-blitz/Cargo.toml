@@ -21,4 +21,5 @@ blitz-shell = {git = "https://github.com/DioxusLabs/blitz.git", rev = "be8fbf979
 anyrender_vello = { version = "0.11.0" }
 winit = { version = "=0.31.0-beta.2" }
 markup5ever = "0.39.0"
-tracing-subscriber = { workspace = true }
+tracing             = { workspace = true }
+tracing-subscriber  = { workspace = true }
