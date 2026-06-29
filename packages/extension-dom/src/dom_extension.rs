@@ -66,14 +66,14 @@ impl DomExtensionState {
         self.entry.as_ref().map(|e| e.content.as_str())
     }
 
-    /// 将增量 patch 发送到 Blitz 渲染线程（fire & forget）
+    /// 将增量 patch 发送到 Blitz 渲染线程（fire & forget，自动唤醒 Blitz）
     pub(crate) fn send_patch(&self, ops: Vec<DomOp>) {
-        let _ = self.channel.dom_tx.send(DomMsg::Patch(ops));
+        self.channel.send(DomMsg::Patch(ops));
     }
 
-    /// 发送首帧全量快照
+    /// 发送首帧全量快照（自动唤醒 Blitz）
     pub(crate) fn send_full(&self, snapshot: webatom_blitz_msg::snapshot::DomSnapshot) {
-        let _ = self.channel.dom_tx.send(DomMsg::Full(snapshot));
+        self.channel.send(DomMsg::Full(snapshot));
     }
 }
 

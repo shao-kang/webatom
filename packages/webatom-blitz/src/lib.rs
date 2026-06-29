@@ -34,6 +34,10 @@ pub fn run(blitz_side: BlitzSide) {
     let event_loop = create_default_event_loop();
     let (proxy, event_queue) = BlitzShellProxy::new(event_loop.create_proxy());
 
+    // JS 发送 DomMsg 后自动唤醒 winit 事件循环
+    let wake_proxy = proxy.clone();
+    blitz_side.set_wake_fn(move || wake_proxy.wake_up());
+
     let mut doc = BaseDocument::new(DocumentConfig::default());
     init_document(&mut doc);
 
