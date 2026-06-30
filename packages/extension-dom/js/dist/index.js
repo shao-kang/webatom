@@ -468,139 +468,151 @@ function getTagFactory(tagName) {
 //#endregion
 //#region src/interface/document-context.ts
 var DocumentContext = class {
-	wrap(handle) {
-		if (!handle) return null;
-		const existing = this._handleNodeMap.get(handle);
-		if (existing) return existing;
-		const factory = getNodeFactory(this._docHandle.nodeType(handle));
-		const node = factory ? factory(this, handle) : new Node(this, handle);
-		this._handleNodeMap.set(handle, node);
-		if (this._docHandle.parentNode(handle) !== null) this._nodes.add(node);
-		return node;
-	}
 	constructor() {
 		this._nodes = /* @__PURE__ */ new Set();
+		this._nodeHandles = /* @__PURE__ */ new Map();
 		this._handleNodeMap = /* @__PURE__ */ new WeakMap();
 		this._docHandle = new DocumentHandle();
 		this._docHandle.onEvent((event) => {
 			console.log(JSON.stringify(event));
 		});
 	}
+	_idToHandle(id) {
+		if (id === null || id === void 0) return null;
+		const ref = this._nodeHandles.get(id);
+		if (ref) {
+			const handle = ref.deref();
+			if (handle) return handle;
+			this._nodeHandles.delete(id);
+		}
+		const handle = this._docHandle.acquireHandle(id);
+		if (handle) this._nodeHandles.set(id, new WeakRef(handle));
+		return handle;
+	}
+	wrap(handle) {
+		if (!handle) return null;
+		const existing = this._handleNodeMap.get(handle);
+		if (existing) return existing;
+		const factory = getNodeFactory(this._docHandle.nodeType(handle.nodeId));
+		const node = factory ? factory(this, handle) : new Node(this, handle);
+		this._handleNodeMap.set(handle, node);
+		if (this._docHandle.parentNode(handle.nodeId) !== null) this._nodes.add(node);
+		return node;
+	}
+	_wrapId(id) {
+		return this.wrap(this._idToHandle(id));
+	}
 	_attachRoot(doc) {
-		this._handleNodeMap.set(this._docHandle.documentNode(), doc);
+		this._handleNodeMap.set(doc._handle, doc);
 		this._nodes.add(doc);
 		this._initNodes();
 	}
 	_initNodes() {
-		this._traverseSubtree(this._docHandle.documentNode());
+		const rootHandle = this._idToHandle(this._docHandle.documentNode());
+		if (rootHandle) this._traverseSubtree(rootHandle);
 	}
 	_traverseSubtree(h) {
 		const node = this.wrap(h);
 		if (node) this._nodes.add(node);
-		let child = this._docHandle.firstChild(h);
-		while (child) {
-			this._traverseSubtree(child);
-			child = this._docHandle.nextSibling(child);
-		}
+		this._docHandle.childNodes(h.nodeId).forEach((child) => {
+			const childHandle = this._idToHandle(child);
+			if (childHandle) this._traverseSubtree(childHandle);
+		});
 	}
 	_releaseSubtree(h) {
 		const node = this._handleNodeMap.get(h);
 		if (node) this._nodes.delete(node);
-		let child = this._docHandle.firstChild(h);
-		while (child) {
-			this._releaseSubtree(child);
-			child = this._docHandle.nextSibling(child);
+		let childId = this._docHandle.firstChild(h.nodeId);
+		while (childId !== null) {
+			const childHandle = this._idToHandle(childId);
+			if (childHandle) this._releaseSubtree(childHandle);
+			childId = this._docHandle.nextSibling(childId);
 		}
 	}
 	nodeType(node) {
-		return this._docHandle.nodeType(node);
+		return this._docHandle.nodeType(node.nodeId);
 	}
 	tagName(node) {
-		return this._docHandle.tagName(node);
+		return this._docHandle.tagName(node.nodeId);
 	}
 	nodeValue(node) {
-		return this._docHandle.nodeValue(node);
+		return this._docHandle.nodeValue(node.nodeId);
 	}
 	setNodeValue(node, value) {
-		this._docHandle.setNodeValue(node, value);
+		this._docHandle.setNodeValue(node.nodeId, value);
 	}
 	getAttribute(node, name) {
-		return this._docHandle.getAttribute(node, name);
+		return this._docHandle.getAttribute(node.nodeId, name);
 	}
 	setAttribute(node, name, value) {
-		this._docHandle.setAttribute(node, name, value);
+		this._docHandle.setAttribute(node.nodeId, name, value);
 	}
 	removeAttribute(node, name) {
-		this._docHandle.removeAttribute(node, name);
+		this._docHandle.removeAttribute(node.nodeId, name);
 	}
 	hasAttribute(node, name) {
-		return this._docHandle.hasAttribute(node, name);
+		return this._docHandle.hasAttribute(node.nodeId, name);
 	}
 	attributes(node) {
-		return this._docHandle.attributes(node);
+		return this._docHandle.attributes(node.nodeId);
 	}
 	parentNode(node) {
-		return this.wrap(this._docHandle.parentNode(node));
+		return this._wrapId(this._docHandle.parentNode(node.nodeId));
 	}
 	firstChild(node) {
-		return this.wrap(this._docHandle.firstChild(node));
+		return this._wrapId(this._docHandle.firstChild(node.nodeId));
 	}
 	lastChild(node) {
-		return this.wrap(this._docHandle.lastChild(node));
+		return this._wrapId(this._docHandle.lastChild(node.nodeId));
 	}
 	nextSibling(node) {
-		return this.wrap(this._docHandle.nextSibling(node));
+		return this._wrapId(this._docHandle.nextSibling(node.nodeId));
 	}
 	previousSibling(node) {
-		return this.wrap(this._docHandle.previousSibling(node));
+		return this._wrapId(this._docHandle.previousSibling(node.nodeId));
 	}
 	documentElement() {
-		return this.wrap(this._docHandle.documentElement());
+		return this._wrapId(this._docHandle.documentElement());
 	}
 	body() {
-		return this.wrap(this._docHandle.body());
+		return this._wrapId(this._docHandle.body());
 	}
 	head() {
-		return this.wrap(this._docHandle.head());
+		return this._wrapId(this._docHandle.head());
 	}
 	appendChild(parent, child) {
-		this._docHandle.appendChild(parent, child);
+		this._docHandle.appendChild(parent.nodeId, child.nodeId);
 		const parentNode = this._handleNodeMap.get(parent);
 		if (parentNode && this._nodes.has(parentNode)) this._traverseSubtree(child);
 	}
 	removeChild(parent, child) {
-		this._docHandle.removeChild(parent, child);
+		this._docHandle.removeChild(parent.nodeId, child.nodeId);
 		const childNode = this._handleNodeMap.get(child);
 		if (childNode && this._nodes.has(childNode)) this._releaseSubtree(child);
 	}
 	insertBefore(parent, newNode, ref) {
-		this._docHandle.insertBefore(parent, newNode, ref);
+		this._docHandle.insertBefore(parent.nodeId, newNode.nodeId, ref.nodeId);
 		const parentNode = this._handleNodeMap.get(parent);
 		if (parentNode && this._nodes.has(parentNode)) this._traverseSubtree(newNode);
 	}
 	replaceChild(parent, newNode, old) {
-		this._docHandle.replaceChild(parent, newNode, old);
+		this._docHandle.replaceChild(parent.nodeId, newNode.nodeId, old.nodeId);
 		const parentNode = this._handleNodeMap.get(parent);
 		if (parentNode && this._nodes.has(parentNode)) this._traverseSubtree(newNode);
 		const oldNode = this._handleNodeMap.get(old);
 		if (oldNode && this._nodes.has(oldNode)) this._releaseSubtree(old);
 	}
 	createElement(tagName) {
-		return this._docHandle.createElement(tagName);
+		return this._idToHandle(this._docHandle.createElement(tagName));
 	}
 	createTextNode(data) {
-		return this._docHandle.createTextNode(data);
+		return this._idToHandle(this._docHandle.createTextNode(data));
 	}
 	createComment(data) {
-		return this._docHandle.createComment(data);
+		return this._idToHandle(this._docHandle.createComment(data));
 	}
-	/** Find the JS Node for a given webAtom numeric node id. */
-	/**
-	* Register a callback that receives resolved Events.
-	* `target` is already a wrapped `Node` (resolved from `targetId`), or null for non-node events.
-	*/
 	documentNode() {
-		return this._docHandle.documentNode();
+		return this._idToHandle(this._docHandle.documentNode());
 	}
 };
 //#endregion

@@ -18,8 +18,15 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for NodeHandle {
     type Changed<'to> = NodeHandle;
 }
 
+impl NodeHandle {
+    pub(crate) fn new(id: usize, inner: Weak<RefCell<DocumentInner>>) -> Self {
+        Self { id, inner }
+    }
+}
+
 #[rquickjs::methods]
 impl NodeHandle {
+
     #[qjs(get, rename = "nodeId")]
     pub fn node_id(&self) -> usize {
         self.id
@@ -33,7 +40,6 @@ impl Drop for NodeHandle {
             if let Some(node) = d.doc.get_mut(self.id) {
                 node.has_handle = false;
             }
-            d.node_handles.remove(&self.id);
             let is_detached = d.doc.parent_node(self.id).is_none() && self.id != d.doc.root();
             if is_detached {
                 d.doc.remove_node(self.id);

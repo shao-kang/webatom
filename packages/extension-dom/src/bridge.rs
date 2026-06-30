@@ -1,4 +1,5 @@
 mod document_inner;
+mod send_persistent;
 mod import_map;
 mod script;
 mod snapshot;

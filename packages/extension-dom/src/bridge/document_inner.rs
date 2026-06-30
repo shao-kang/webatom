@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use rquickjs::{Persistent, Value};
 use webatom_blitz_msg::patch::DomOp;
 
 use crate::core::Document;
@@ -51,21 +50,12 @@ impl PatchBuffer {
 
 pub(crate) struct DocumentInner {
     pub doc: Document,
-    pub node_handles: HashMap<usize, Persistent<Value<'static>>>,
 }
 
 impl DocumentInner {
-    pub fn new() -> Self {
-        Self {
-            doc: Document::new(),
-            node_handles: HashMap::new(),
-        }
-    }
-
     pub fn new_html(html: &str) -> Self {
         Self {
             doc: Document::parse_html(html),
-            node_handles: HashMap::new(),
         }
     }
 }
