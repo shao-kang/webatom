@@ -23,7 +23,25 @@ impl Resolver for EsmResolver {
                 return Ok(name.to_string());
             }
         }
+        // Self-contained / absolute URL schemes — pass through as-is.
+        if name.starts_with("data:")
+            || name.starts_with("http://")
+            || name.starts_with("https://")
+            || name.starts_with("file://")
+        {
+            return Ok(name.to_string());
+        }
         if name.starts_with("./") || name.starts_with("../") {
+            // Resolve relative to the base, which may itself be a URL.
+            if base.starts_with("http://") || base.starts_with("https://") || base.starts_with("file://") {
+                let base_url = base.trim_end_matches('/');
+                let base_dir = match base_url.rfind('/') {
+                    Some(pos) => &base_url[..pos],
+                    None => base_url,
+                };
+                let rel = name.trim_start_matches("./");
+                return Ok(format!("{base_dir}/{rel}"));
+            }
             let base_path = Path::new(base);
             let base_dir = if base_path.extension().is_some() {
                 base_path.parent().unwrap_or(Path::new("."))

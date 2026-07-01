@@ -15,7 +15,10 @@
                     "--package=webatom-blitz"
                 ]
             },
-            "args": []
+            "args": [],
+            "env": {
+                "RUST_LOG": "error"
+            }
         },
 
         {

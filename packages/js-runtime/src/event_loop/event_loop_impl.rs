@@ -169,7 +169,15 @@ impl EventLoop {
         task: MacroTask,
         ctx: &AsyncContext,
     ) -> rquickjs::Result<()> {
-        ctx.with(move |qctx| task(qctx)).await
+        ctx.with(move |qctx| {
+            use rquickjs::CatchResultExt;
+            if let Err(e) = task(qctx.clone()).catch(&qctx) {
+                tracing::error!("JS uncaught exception: {e}");
+                // Don't re-throw — match browser behavior where uncaught
+                // exceptions don't stop other scripts from running.
+            }
+            Ok(())
+        }).await
     }
 
     async fn process_vsync(

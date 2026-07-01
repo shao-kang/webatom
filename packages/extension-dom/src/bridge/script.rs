@@ -4,6 +4,7 @@ use rquickjs::{Ctx, Module, Object, Result, Value};
 use js_runtime::event_loop::HostBridge;
 
 use crate::core::{ScriptInfo, ScriptKind};
+use crate::dom_extension::DomExtensionState;
 use super::import_map::{ImportMapData, ImportMapState};
 
 /// 根据 `<script>` 元素属性执行脚本，语义对齐 MDN 规范。
@@ -34,12 +35,24 @@ pub(crate) fn execute_script<'js>(
 
 fn exec_classic<'js>(ctx: &Ctx<'js>, info: ScriptInfo) -> Result<()> {
     if let Some(ref src) = info.src {
-        match load_source(src) {
-            Ok(code) => ctx.eval::<(), _>(code.as_bytes())?,
-            Err(e)   => tracing::warn!(src = src.as_str(), error = %e, "classic script src load failed"),
+        let src = src.trim();
+        if src.is_empty() { return Ok(()); }
+        let base = ctx.userdata::<DomExtensionState>().and_then(|s| s.base_url().map(str::to_owned));
+        let url = resolve_url(src, base.as_deref());
+        match load_source(&url) {
+            Ok(code) => {
+                use rquickjs::CatchResultExt;
+                ctx.eval::<(), _>(code.as_bytes())
+                    .catch(ctx)
+                    .map_err(|e| { tracing::error!(src, "classic script eval error: {e}"); e.throw(ctx) })?;
+            }
+            Err(e) => tracing::warn!(src, error = %e, "classic script src load failed"),
         }
     } else if !info.content.trim().is_empty() {
-        ctx.eval::<(), _>(info.content.as_bytes())?;
+        use rquickjs::CatchResultExt;
+        ctx.eval::<(), _>(info.content.as_bytes())
+            .catch(ctx)
+            .map_err(|e| { tracing::error!("inline classic script eval error: {e}"); e.throw(ctx) })?;
     }
     Ok(())
 }
@@ -52,40 +65,74 @@ fn exec_module<'js>(
     info: ScriptInfo,
     node_id: usize,
 ) -> Result<()> {
-    let (specifier, code) = if let Some(ref src) = info.src {
-        // 先查 import map 解析 src
+    if let Some(ref src) = info.src {
+        let src = src.trim();
+        if src.is_empty() { return Ok(()); }
+
+        // import map 解析
         let resolved = ctx.userdata::<ImportMapState>()
             .and_then(|state| state.resolve("", src))
-            .unwrap_or_else(|| src.clone());
+            .unwrap_or_else(|| src.to_owned());
 
-        match load_source(&resolved) {
-            Ok(code) => (resolved, code),
+        // 拼接 base_url（HTTP 页面的相对路径 → 完整 HTTP URL）
+        let base = ctx.userdata::<DomExtensionState>().and_then(|s| s.base_url().map(str::to_owned));
+        let full_url = resolve_url(&resolved, base.as_deref());
+
+        if full_url.starts_with("http://") || full_url.starts_with("https://") {
+            // HTTP 脚本：异步 fetch，完成后推入 task_tx
+            if let Some(host) = host {
+                let task_tx = host.io.task_tx.clone();
+                tokio::task::spawn(async move {
+                    match reqwest::get(&full_url).await {
+                        Ok(resp) => match resp.text().await {
+                            Ok(code) => {
+                                let specifier = full_url.clone();
+                                let _ = task_tx.send(Box::new(move |ctx: Ctx<'_>| {
+                                    use rquickjs::CatchResultExt;
+                                    Module::evaluate(ctx.clone(), specifier.as_str(), code)
+                                        .catch(&ctx)
+                                        .map_err(|e| { tracing::error!(module = specifier.as_str(), "JS module eval error: {e}"); e.throw(&ctx) })?
+                                        .finish::<()>()
+                                        .catch(&ctx)
+                                        .map_err(|e| { tracing::error!(module = specifier.as_str(), "JS module finish error: {e}"); e.throw(&ctx) })
+                                })).await;
+                            }
+                            Err(e) => tracing::warn!(url = full_url.as_str(), error = %e, "HTTP module fetch body failed"),
+                        },
+                        Err(e) => tracing::warn!(url = full_url.as_str(), error = %e, "HTTP module fetch failed"),
+                    }
+                });
+            }
+            return Ok(());
+        }
+
+        match load_source(&full_url) {
+            Ok(code) => eval_module(ctx, host, full_url, code),
             Err(e) => {
-                tracing::warn!(src = src.as_str(), error = %e, "module script src load failed");
-                return Ok(());
+                tracing::warn!(src, error = %e, "module script src load failed");
+                Ok(())
             }
         }
     } else if !info.content.trim().is_empty() {
-        // 内联模块：合成 specifier 供 loader 解析模块内的相对 import
-        (format!("file:///inline-module-{node_id}.mjs"), info.content)
+        let specifier = format!("file:///inline-module-{node_id}.mjs");
+        eval_module(ctx, host, specifier, info.content)
     } else {
-        return Ok(());
-    };
+        Ok(())
+    }
+}
 
-    // 浏览器规范：module 默认 defer，文档解析完成后执行
-    // 实现：推入 task_tx 宏任务队列，在当前同步代码结束后执行
+fn eval_module<'js>(ctx: &Ctx<'js>, host: Option<&HostBridge>, specifier: String, code: String) -> Result<()> {
     if let Some(host) = host {
         let _ = host.io.task_tx.try_send(Box::new(move |ctx: Ctx<'_>| {
             use rquickjs::CatchResultExt;
             Module::evaluate(ctx.clone(), specifier.as_str(), code)
                 .catch(&ctx)
-                .map_err(|e| e.throw(&ctx))?
+                .map_err(|e| { tracing::error!(module = specifier.as_str(), "JS module eval error: {e}"); e.throw(&ctx) })?
                 .finish::<()>()
                 .catch(&ctx)
-                .map_err(|e| e.throw(&ctx))
+                .map_err(|e| { tracing::error!(module = specifier.as_str(), "JS module finish error: {e}"); e.throw(&ctx) })
         }));
     } else {
-        // 测试场景（无 HostBridge）：立即执行
         Module::evaluate(ctx.clone(), specifier.as_str(), code)?;
     }
     Ok(())
@@ -154,12 +201,29 @@ fn extract_scopes(obj: Option<Object<'_>>) -> Result<Vec<(String, HashMap<String
 
 // ── 文件加载 ──────────────────────────────────────────────────────────────────
 
-/// 从 `src` 加载脚本源码。
-/// 支持 `file://` URL、绝对路径、相对路径（相对 CWD）。HTTP URL 返回错误。
+/// 从本地路径加载脚本源码（HTTP URL 由调用方异步处理，不传入此函数）。
 fn load_source(src: &str) -> std::result::Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    if src.starts_with("http://") || src.starts_with("https://") {
-        return Err(format!("HTTP external scripts not yet supported: {src}").into());
-    }
     let path = src.strip_prefix("file://").unwrap_or(src);
     Ok(std::fs::read_to_string(path)?)
+}
+
+/// 将 `src` 解析为完整 URL。
+/// - 已含协议头（http/https/file）→ 原样返回
+/// - 绝对路径 `/foo` → `file:///foo`
+/// - 相对路径 `./foo` / `foo` → 追加到 `base_url`
+fn resolve_url(src: &str, base_url: Option<&str>) -> String {
+    if src.starts_with("http://") || src.starts_with("https://") || src.starts_with("file://") {
+        return src.to_owned();
+    }
+    if src.starts_with('/') {
+        return format!("file://{src}");
+    }
+    match base_url {
+        Some(base) => {
+            let base = base.trim_end_matches('/');
+            let rel = src.trim_start_matches("./");
+            format!("{base}/{rel}")
+        }
+        None => src.to_owned(),
+    }
 }

@@ -88,6 +88,12 @@ fn main() {
 
             if let Err(e) = js_rt.run().await {
                 eprintln!("JS 事件循环错误: {e}");
+                let mut source = std::error::Error::source(&e);
+                while let Some(cause) = source {
+                    eprintln!("  caused by: {cause}");
+                    source = cause.source();
+                }
+                eprintln!("  debug: {e:?}");
             }
         });
     });

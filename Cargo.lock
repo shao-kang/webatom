@@ -4966,6 +4966,7 @@ version = "0.1.0"
 dependencies = [
  "html5ever 0.26.0",
  "markup5ever 0.11.0",
+ "reqwest 0.12.28",
  "rquickjs",
  "serde_json",
  "slab",

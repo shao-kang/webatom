@@ -99,23 +99,24 @@ impl ApplicationHandler for WebAtomApp {
                     } else {
                         Event::KeyUp { key: key_str, modifiers: 0 }
                     };
-                    let _ = self.blitz_side.event_tx.send(blitz_evt);
+                    let _ = self.blitz_side.send_event(blitz_evt);
                 }
             }
             WindowEvent::SurfaceResized(ref size) => {
                 use webatom_blitz_msg::Event;
-                let _ = self.blitz_side.event_tx.send(Event::Resize {
+                let _ = self.blitz_side.send_event(Event::Resize {
                     width: size.width,
                     height: size.height,
                 });
             }
             WindowEvent::PointerMoved { position: ref pos, .. } => {
                 use webatom_blitz_msg::Event;
-                self.cursor_pos = (pos.x as f32, pos.y as f32);
-                let _ = self.blitz_side.event_tx.send(Event::MouseMove {
-                    x: pos.x as f32,
-                    y: pos.y as f32,
-                });
+                let (cx, cy) = self.inner.windows.values_mut()
+                    .next()
+                    .map(|w| { let c = w.pointer_coords(*pos); (c.client_x, c.client_y) })
+                    .unwrap_or((pos.x as f32, pos.y as f32));
+                self.cursor_pos = (cx, cy);
+                let _ = self.blitz_side.send_event(Event::MouseMove { x: cx, y: cy });
             }
             WindowEvent::PointerButton { ref button, ref state, ref position, .. } => {
                 use std::time::{Duration, Instant};
@@ -132,29 +133,29 @@ impl ApplicationHandler for WebAtomApp {
                     ButtonSource::Mouse(MouseButton::Middle) => 2,
                     _                                        => 3,
                 };
-                let x = position.x as f32;
-                let y = position.y as f32;
-                self.cursor_pos = (x, y);
-
-                // Hit test against the current layout. Result is owned so the
-                // borrow of self.inner is released before we access self.id_map.
-                let blitz_node: Option<usize> = self.inner.windows.values_mut()
+                // Convert physical → logical coords and hit-test in one pass.
+                let (x, y, blitz_node) = self.inner.windows.values_mut()
                     .next()
-                    .and_then(|w| w.doc.inner().hit(x, y))
-                    .map(|h| h.node_id);
+                    .map(|w| {
+                        let c = w.pointer_coords(*position);
+                        let hit = w.doc.inner().hit(c.page_x, c.page_y);
+                        (c.client_x, c.client_y, hit.map(|h| h.node_id))
+                    })
+                    .unwrap_or((position.x as f32, position.y as f32, None));
+                self.cursor_pos = (x, y);
                 let target_id = blitz_node
                     .and_then(|id| self.id_map.js_id(id))
                     .unwrap_or(0);
 
                 if *state == ElementState::Pressed {
-                    let _ = self.blitz_side.event_tx.send(
+                    let _ = self.blitz_side.send_event(
                         Event::MouseDown { node_id: target_id, x, y, button: button_id },
                     );
                     if button_id == 0 {
                         self.mouse_press = Some((x, y, Instant::now()));
                     }
                 } else {
-                    let _ = self.blitz_side.event_tx.send(
+                    let _ = self.blitz_side.send_event(
                         Event::MouseUp { node_id: target_id, x, y, button: button_id },
                     );
                     if button_id == 0 {
@@ -166,12 +167,12 @@ impl ApplicationHandler for WebAtomApp {
                                     .map_or(false, |t| now.duration_since(t) <= DBLCLICK_MS);
                                 if is_dbl {
                                     self.last_click_time = None;
-                                    let _ = self.blitz_side.event_tx.send(
+                                    let _ = self.blitz_side.send_event(
                                         Event::DblClick { node_id: target_id, x, y },
                                     );
                                 } else {
                                     self.last_click_time = Some(now);
-                                    let _ = self.blitz_side.event_tx.send(
+                                    let _ = self.blitz_side.send_event(
                                         Event::Click { node_id: target_id, x, y },
                                     );
                                 }
@@ -187,7 +188,7 @@ impl ApplicationHandler for WebAtomApp {
                     MouseScrollDelta::LineDelta(x, y) => (*x * 20.0, *y * 20.0),
                     MouseScrollDelta::PixelDelta(p)   => (p.x as f32, p.y as f32),
                 };
-                let _ = self.blitz_side.event_tx.send(Event::Scroll { delta_x: dx, delta_y: dy });
+                let _ = self.blitz_side.send_event(Event::Scroll { delta_x: dx, delta_y: dy });
             }
             _ => {}
         }
@@ -198,11 +199,11 @@ impl ApplicationHandler for WebAtomApp {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        // Drain crossbeam dom_rx, apply updates to blitz document
+        // Drain crossbeam dom channel, apply updates to blitz document
         let mut latest_full: Option<webatom_blitz_msg::DomSnapshot> = None;
         let mut patches: Vec<webatom_blitz_msg::DomOp> = Vec::new();
 
-        while let Ok(msg) = self.blitz_side.dom_rx.try_recv() {
+        for msg in self.blitz_side.drain_dom_msgs() {
             match msg {
                 DomMsg::Full(snap) => {
                     latest_full = Some(snap);

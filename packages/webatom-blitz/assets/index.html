@@ -7,8 +7,16 @@
 <body>
   <div style="padding: 20px; font-family: sans-serif;">
     <h1>Hello webAtom</h1>
-    <p>JS runtime + DOM extension</p>
+    <p class="red" style=" background: #f0f">JS runtime + DOM extension</p>
   </div>
+  <style>
+    body{
+      background-color: #f0f0f0;
+    }
+    .red {
+      color: #f00;
+    }
+  </style>
   <script>
     let num = 0
     const append = ()=> {
@@ -16,7 +24,8 @@
       num++;
       const div = document.createElement('div');
       div.addEventListener('click', (e)=> {
-        console.log(e.target)
+        console.log('click', e.target)
+        e.currentTarget.append('ddddd')
 
       })
       console.log(div)
@@ -26,7 +35,7 @@
     const intervalId = setInterval(()=> {
       console.log('append' + num)
       append()
-      if(num > 100) {
+      if(num > 5) {
         clearInterval(intervalId)
       }
 

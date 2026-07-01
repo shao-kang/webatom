@@ -68,12 +68,12 @@ impl DomExtensionState {
 
     /// 将增量 patch 发送到 Blitz 渲染线程（fire & forget，自动唤醒 Blitz）
     pub(crate) fn send_patch(&self, ops: Vec<DomOp>) {
-        self.channel.send(DomMsg::Patch(ops));
+        self.channel.send_dom(DomMsg::Patch(ops));
     }
 
     /// 发送首帧全量快照（自动唤醒 Blitz）
     pub(crate) fn send_full(&self, snapshot: webatom_blitz_msg::snapshot::DomSnapshot) {
-        self.channel.send(DomMsg::Full(snapshot));
+        self.channel.send_dom(DomMsg::Full(snapshot));
     }
 }
 

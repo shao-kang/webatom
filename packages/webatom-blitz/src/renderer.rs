@@ -139,6 +139,14 @@ fn apply_op(mutator: &mut DocumentMutator<'_>, id_map: &mut NodeIdMap, op: &DomO
         }
         DomOp::ReplaceAttributes { node, attrs } => {
             if let Some(blitz_id) = id_map.blitz_id(*node) {
+                let old_names: Vec<QualName> = mutator.doc
+                    .get_node(blitz_id)
+                    .and_then(|n| n.element_data())
+                    .map(|e| e.attrs.iter().map(|a| a.name.clone()).collect())
+                    .unwrap_or_default();
+                for name in old_names {
+                    mutator.clear_attribute(blitz_id, name);
+                }
                 for (name, value) in attrs {
                     mutator.set_attribute(blitz_id, attr_qname(name), value);
                 }

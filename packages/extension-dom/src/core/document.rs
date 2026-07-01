@@ -316,8 +316,8 @@ impl Document {
             .map(|(id, node)| {
                 let data = match &node.data {
                     NodeData::Document => SnapshotNodeData::Document,
-                    NodeData::Element(_) => SnapshotNodeData::Element {
-                        tag: self.tag_name(id).unwrap_or_default(),
+                    NodeData::Element(e) => SnapshotNodeData::Element {
+                        tag: e.name.local.to_string(),
                         attrs: self.attributes_list(id),
                     },
                     NodeData::Text(t) => SnapshotNodeData::Text { content: t.content.clone() },

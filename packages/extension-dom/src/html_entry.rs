@@ -3,16 +3,14 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub enum HtmlEntryError {
     Io(std::io::Error),
-    HttpNotSupported,
+    Http(reqwest::Error),
 }
 
 impl std::fmt::Display for HtmlEntryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(e) => write!(f, "IO error: {e}"),
-            Self::HttpNotSupported => {
-                write!(f, "HTTP entry loading not yet supported (Phase 2)")
-            }
+            Self::Io(e)   => write!(f, "IO error: {e}"),
+            Self::Http(e) => write!(f, "HTTP error: {e}"),
         }
     }
 }
@@ -20,8 +18,8 @@ impl std::fmt::Display for HtmlEntryError {
 impl std::error::Error for HtmlEntryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io(e) => Some(e),
-            Self::HttpNotSupported => None,
+            Self::Io(e)   => Some(e),
+            Self::Http(e) => Some(e),
         }
     }
 }
@@ -66,8 +64,19 @@ impl HtmlEntry {
         Ok(Arc::new(Self { url, base_url, content }))
     }
 
-    /// Phase 2：从 HTTP/HTTPS URL 加载入口文件。
-    async fn from_http(_url: String) -> Result<Arc<Self>, HtmlEntryError> {
-        Err(HtmlEntryError::HttpNotSupported)
+    async fn from_http(url: String) -> Result<Arc<Self>, HtmlEntryError> {
+        let content = reqwest::get(&url)
+            .await
+            .map_err(HtmlEntryError::Http)?
+            .text()
+            .await
+            .map_err(HtmlEntryError::Http)?;
+
+        let base_url = match url.rfind('/') {
+            Some(pos) => format!("{}/", &url[..pos]),
+            None => format!("{url}/"),
+        };
+
+        Ok(Arc::new(Self { url, base_url, content }))
     }
 }

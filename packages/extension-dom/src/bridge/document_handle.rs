@@ -363,8 +363,6 @@ impl DocumentHandle {
     /// runtime. spawn_blocking only captures pure-Rust values (no Persistent<T>).
     #[qjs(rename = "onEvent")]
     pub fn on_event<'js>(&self, ctx: Ctx<'js>, callback: Function<'js>) -> Result<()> {
-        use webatom_blitz_msg::Event;
-
         // Update or create the context-scoped callback store.
         let new_cb = SendPersistent(Persistent::save(&ctx, callback));
         if let Some(store) = ctx.userdata::<EventCallbackStore>() {
@@ -384,7 +382,7 @@ impl DocumentHandle {
         let task_tx = host.io.task_tx.clone();
         // spawn_blocking captures no Persistent<T> — only pure Rust values.
         tokio::task::spawn_blocking(move || {
-            while let Ok(evt) = channel.event_rx.recv() {
+            while let Ok(evt) = channel.recv_event() {
                 let task: js_runtime::event_loop::MacroTask = Box::new(move |ctx: Ctx<'_>| {
                     let json = serde_json::to_string(&evt).unwrap_or_else(|_| "{}".to_string());
                     let json_str = rquickjs::String::from_str(ctx.clone(), &json)?;

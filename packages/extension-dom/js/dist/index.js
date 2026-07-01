@@ -477,8 +477,50 @@ var DocumentContext = class {
 			this.onEvent(event);
 		});
 	}
-	onEvent(event) {
-		console.log(JSON.stringify(event));
+	onEvent(raw) {
+		const { type } = raw;
+		const targetNode = raw.nodeId != null ? this._wrapId(raw.nodeId) : null;
+		let domEvent;
+		switch (type) {
+			case "click":
+			case "dblclick":
+			case "mousedown":
+			case "mouseup":
+			case "mousemove":
+				domEvent = new MouseEvent(type, {
+					bubbles: true,
+					cancelable: true,
+					clientX: raw.x ?? 0,
+					clientY: raw.y ?? 0,
+					button: raw.button ?? 0
+				});
+				break;
+			case "keydown":
+			case "keyup":
+				domEvent = new KeyboardEvent(type, {
+					bubbles: true,
+					cancelable: true,
+					key: raw.key ?? ""
+				});
+				break;
+			case "focus":
+				domEvent = new FocusEvent("focus", {
+					bubbles: false,
+					cancelable: false
+				});
+				break;
+			case "blur":
+				domEvent = new FocusEvent("blur", {
+					bubbles: false,
+					cancelable: false
+				});
+				break;
+			default: domEvent = new Event$1(type, {
+				bubbles: false,
+				cancelable: false
+			});
+		}
+		(targetNode ?? this._wrapId(this._docHandle.documentNode()))?.dispatchEvent(domEvent);
 	}
 	_idToHandle(id) {
 		if (id === null || id === void 0) return null;

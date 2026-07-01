@@ -4,6 +4,7 @@
 import { DocumentHandle, NodeHandle } from './native';
 import { Node } from './node';
 import { getNodeFactory } from '@/html/index';
+import { Event as DomEvent, MouseEvent, KeyboardEvent, FocusEvent } from './event';
 
 export class DocumentContext {
   readonly _docHandle: DocumentHandle;
@@ -19,15 +20,53 @@ export class DocumentContext {
     });
   }
 
-  onEvent(event){
-    // const { targetNodeId } = event;
-    // let node 
-    // const handle = this._nodeHandles.get(targetNodeId)?.deref();
-    // if(handle) {
-    //   node = this._handleNodeMap.get(handle);
-    // }
-    console.log(JSON.stringify(event));
+  onEvent(raw: {
+    type: string;
+    nodeId?: number;
+    x?: number; y?: number;
+    button?: number;
+    key?: string; modifiers?: number;
+    width?: number; height?: number;
+    deltaX?: number; deltaY?: number;
+  }) {
+    const { type } = raw;
 
+    // Resolve target node (null for document-level events like resize/scroll)
+    const targetNode = raw.nodeId != null ? this._wrapId(raw.nodeId) : null;
+
+    let domEvent: DomEvent;
+    switch (type) {
+      case 'click':
+      case 'dblclick':
+      case 'mousedown':
+      case 'mouseup':
+      case 'mousemove':
+        domEvent = new MouseEvent(type, {
+          bubbles: true, cancelable: true,
+          clientX: raw.x ?? 0, clientY: raw.y ?? 0,
+          button: raw.button ?? 0,
+        });
+        break;
+      case 'keydown':
+      case 'keyup':
+        domEvent = new KeyboardEvent(type, {
+          bubbles: true, cancelable: true,
+          key: raw.key ?? '',
+        });
+        break;
+      case 'focus':
+        domEvent = new FocusEvent('focus', { bubbles: false, cancelable: false });
+        break;
+      case 'blur':
+        domEvent = new FocusEvent('blur', { bubbles: false, cancelable: false });
+        break;
+      default:
+        domEvent = new DomEvent(type, { bubbles: false, cancelable: false });
+    }
+
+    // Dispatch: capture → target → bubble (handled by EventTarget.dispatchEvent)
+    const dispatchTarget = targetNode ?? this._wrapId(this._docHandle.documentNode());
+    dispatchTarget?.dispatchEvent(domEvent);
   }
 
   // ── Internal: id ↔ NodeHandle ─────────────────────────────────────────────
