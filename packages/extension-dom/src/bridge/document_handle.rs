@@ -386,68 +386,12 @@ impl DocumentHandle {
         tokio::task::spawn_blocking(move || {
             while let Ok(evt) = channel.event_rx.recv() {
                 let task: js_runtime::event_loop::MacroTask = Box::new(move |ctx: Ctx<'_>| {
-                    let obj = rquickjs::Object::new(ctx.clone())?;
-                    match evt {
-                        Event::KeyDown { key, modifiers } => {
-                            obj.set("type", "keydown")?;
-                            obj.set("key", key)?;
-                            obj.set("modifiers", modifiers)?;
-                        }
-                        Event::KeyUp { key, modifiers } => {
-                            obj.set("type", "keyup")?;
-                            obj.set("key", key)?;
-                            obj.set("modifiers", modifiers)?;
-                        }
-                        Event::Click { node_id, x, y } => {
-                            obj.set("type", "click")?;
-                            obj.set("targetNodeId", node_id)?;
-                            obj.set("x", x)?;
-                            obj.set("y", y)?;
-                        }
-                        Event::Focus { node_id } => {
-                            obj.set("type", "focus")?;
-                            obj.set("targetNodeId", node_id)?;
-                        }
-                        Event::Blur { node_id } => {
-                            obj.set("type", "blur")?;
-                            obj.set("targetNodeId", node_id)?;
-                        }
-                        Event::Resize { width, height } => {
-                            obj.set("type", "resize")?;
-                            obj.set("width", width)?;
-                            obj.set("height", height)?;
-                        }
-                        Event::MouseMove { x, y } => {
-                            obj.set("type", "mousemove")?;
-                            obj.set("x", x)?;
-                            obj.set("y", y)?;
-                        }
-                        Event::MouseDown { node_id, x, y, button } => {
-                            obj.set("type", "mousedown")?;
-                            obj.set("targetNodeId", node_id)?;
-                            obj.set("x", x)?;
-                            obj.set("y", y)?;
-                            obj.set("button", button)?;
-                        }
-                        Event::MouseUp { node_id, x, y, button } => {
-                            obj.set("type", "mouseup")?;
-                            obj.set("targetNodeId", node_id)?;
-                            obj.set("x", x)?;
-                            obj.set("y", y)?;
-                            obj.set("button", button)?;
-                        }
-                        Event::DblClick { node_id, x, y } => {
-                            obj.set("type", "dblclick")?;
-                            obj.set("targetNodeId", node_id)?;
-                            obj.set("x", x)?;
-                            obj.set("y", y)?;
-                        }
-                        Event::Scroll { delta_x, delta_y } => {
-                            obj.set("type", "scroll")?;
-                            obj.set("deltaX", delta_x)?;
-                            obj.set("deltaY", delta_y)?;
-                        }
-                    }
+                    let json = serde_json::to_string(&evt).unwrap_or_else(|_| "{}".to_string());
+                    let json_str = rquickjs::String::from_str(ctx.clone(), &json)?;
+                    let obj: rquickjs::Value = ctx.globals()
+                        .get::<_, rquickjs::Object>("JSON")?
+                        .get::<_, rquickjs::Function>("parse")?
+                        .call((json_str,))?;
                     // Retrieve callback from context userdata (JS thread only — safe to restore here).
                     let func = ctx.userdata::<EventCallbackStore>()
                         .and_then(|store| {

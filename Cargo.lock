@@ -4941,6 +4941,7 @@ name = "webatom-blitz-msg"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "serde",
 ]
 
 [[package]]
@@ -4966,6 +4967,7 @@ dependencies = [
  "html5ever 0.26.0",
  "markup5ever 0.11.0",
  "rquickjs",
+ "serde_json",
  "slab",
  "tokio",
  "tracing",

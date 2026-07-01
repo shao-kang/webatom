@@ -15,8 +15,19 @@ export class DocumentContext {
   constructor() {
     this._docHandle = new DocumentHandle();
     this._docHandle.onEvent((event) => {
-      console.log(JSON.stringify(event));
+      this.onEvent(event);
     });
+  }
+
+  onEvent(event){
+    // const { targetNodeId } = event;
+    // let node 
+    // const handle = this._nodeHandles.get(targetNodeId)?.deref();
+    // if(handle) {
+    //   node = this._handleNodeMap.get(handle);
+    // }
+    console.log(JSON.stringify(event));
+
   }
 
   // ── Internal: id ↔ NodeHandle ─────────────────────────────────────────────
@@ -50,7 +61,7 @@ export class DocumentContext {
     return node;
   }
 
-  private _wrapId(id: number | null): Node | null {
+  _wrapId(id: number | null): Node | null {
     return this.wrap(this._idToHandle(id));
   }
 

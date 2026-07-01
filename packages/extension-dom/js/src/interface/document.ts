@@ -1,7 +1,6 @@
 // https://dom.spec.whatwg.org/#document
 
 import { Node } from './node';
-import type { NodeHandle } from './native';
 import { DocumentContext } from './document-context';
 
 export class Document extends Node {
@@ -48,19 +47,19 @@ export class Document extends Node {
   // ── Query ────────────────────────────────────────────────────────────────
 
   getElementById(id: string): Node | null {
-    return this._findById(this._ctx._docHandle.firstChild(this._handle), id);
+    return this._findById(this._ctx._docHandle.firstChild(this._handle.nodeId), id);
   }
 
-  private _findById(h: NodeHandle | null, id: string): Node | null {
-    while (h) {
-      if (this._ctx.nodeType(h) === Node.ELEMENT_NODE) {
-        if (this._ctx.getAttribute(h, 'id') === id) {
-          return this._ctx.wrap(h);
+  private _findById(nodeId: number | null, id: string): Node | null {
+    while (nodeId !== null) {
+      if (this._ctx._docHandle.nodeType(nodeId) === Node.ELEMENT_NODE) {
+        if (this._ctx._docHandle.getAttribute(nodeId, 'id') === id) {
+          return this._ctx._wrapId(nodeId);
         }
-        const found = this._findById(this._ctx._docHandle.firstChild(h), id);
+        const found = this._findById(this._ctx._docHandle.firstChild(nodeId), id);
         if (found) return found;
       }
-      h = this._ctx._docHandle.nextSibling(h);
+      nodeId = this._ctx._docHandle.nextSibling(nodeId);
     }
     return null;
   }

@@ -474,8 +474,11 @@ var DocumentContext = class {
 		this._handleNodeMap = /* @__PURE__ */ new WeakMap();
 		this._docHandle = new DocumentHandle();
 		this._docHandle.onEvent((event) => {
-			console.log(JSON.stringify(event));
+			this.onEvent(event);
 		});
+	}
+	onEvent(event) {
+		console.log(JSON.stringify(event));
 	}
 	_idToHandle(id) {
 		if (id === null || id === void 0) return null;
@@ -646,16 +649,16 @@ var Document = class extends Node {
 		return this._ctx.wrap(this._ctx.createComment(data));
 	}
 	getElementById(id) {
-		return this._findById(this._ctx._docHandle.firstChild(this._handle), id);
+		return this._findById(this._ctx._docHandle.firstChild(this._handle.nodeId), id);
 	}
-	_findById(h, id) {
-		while (h) {
-			if (this._ctx.nodeType(h) === Node.ELEMENT_NODE) {
-				if (this._ctx.getAttribute(h, "id") === id) return this._ctx.wrap(h);
-				const found = this._findById(this._ctx._docHandle.firstChild(h), id);
+	_findById(nodeId, id) {
+		while (nodeId !== null) {
+			if (this._ctx._docHandle.nodeType(nodeId) === Node.ELEMENT_NODE) {
+				if (this._ctx._docHandle.getAttribute(nodeId, "id") === id) return this._ctx._wrapId(nodeId);
+				const found = this._findById(this._ctx._docHandle.firstChild(nodeId), id);
 				if (found) return found;
 			}
-			h = this._ctx._docHandle.nextSibling(h);
+			nodeId = this._ctx._docHandle.nextSibling(nodeId);
 		}
 		return null;
 	}
