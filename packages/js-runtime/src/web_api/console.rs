@@ -2,6 +2,7 @@ use rquickjs::{Ctx, Function, Result, module::{Declarations, Exports, ModuleDef}
 
 use crate::event_loop::HostBridge;
 use crate::extension::Extension;
+use crate::log_targets as target;
 
 pub struct ConsoleModule;
 
@@ -19,14 +20,14 @@ impl ModuleDef for ConsoleModule {
         exports.export(
             "log",
             Function::new(ctx.clone(), |_ctx: Ctx<'js>, s: String| {
-                tracing::info!(target: "web_console_log", message = %s);
+                tracing::info!(target: target::JS_CONSOLE, "{s}");
                 Ok::<(), rquickjs::Error>(())
             })?,
         )?;
         exports.export(
             "info",
             Function::new(ctx.clone(), |_ctx: Ctx<'js>, s: String| {
-                tracing::info!(target: "web_console_info", message = %s);
+                tracing::info!(target: target::JS_CONSOLE, "{s}");
                 Ok::<(), rquickjs::Error>(())
             })?,
         )?;
@@ -34,7 +35,7 @@ impl ModuleDef for ConsoleModule {
             "warn",
             Function::new(ctx.clone(), |ctx: Ctx<'js>, s: String| {
                 let stack = js_stack_trace(&ctx);
-                tracing::warn!(target: "web_console_warn", message = %s, js_stack = %stack);
+                tracing::warn!(target: target::JS_CONSOLE, "{s}\n{stack}");
                 Ok::<(), rquickjs::Error>(())
             })?,
         )?;
@@ -42,14 +43,15 @@ impl ModuleDef for ConsoleModule {
             "error",
             Function::new(ctx.clone(), |ctx: Ctx<'js>, s: String| {
                 let stack = js_stack_trace(&ctx);
-                tracing::error!(target: "web_console_error", message = %s, js_stack = %stack);
+                eprintln!("[js::console] {s}\n{stack}");
+                tracing::error!(target: target::JS_CONSOLE, "{s}\n{stack}");
                 Ok::<(), rquickjs::Error>(())
             })?,
         )?;
         exports.export(
             "debug",
             Function::new(ctx.clone(), |_ctx: Ctx<'js>, s: String| {
-                tracing::debug!(target: "web_console_debug", message = %s);
+                tracing::debug!(target: target::JS_CONSOLE, "{s}");
                 Ok::<(), rquickjs::Error>(())
             })?,
         )?;

@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, watch};
 
 use super::task::{MacroTask, RafTask};
 use super::handle::{EventLoopHandle, HostBridge, KeepAliveCount, RuntimeBridge, RuntimeIo, SchedulerBridge};
+use crate::log_targets as target;
 use super::idle::{IdleQueue, IdleScheduler};
 use super::render_scheduler::{HeadlessRenderScheduler, RenderScheduler, VsyncSignal};
 
@@ -172,7 +173,7 @@ impl EventLoop {
         ctx.with(move |qctx| {
             use rquickjs::CatchResultExt;
             if let Err(e) = task(qctx.clone()).catch(&qctx) {
-                tracing::error!("JS uncaught exception: {e}");
+                tracing::error!(target: target::JS_EXCEPTION, "{e}");
                 // Don't re-throw — match browser behavior where uncaught
                 // exceptions don't stop other scripts from running.
             }
