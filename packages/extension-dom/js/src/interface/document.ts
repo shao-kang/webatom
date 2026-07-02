@@ -46,6 +46,14 @@ export class Document extends Node {
 
   // ── Query ────────────────────────────────────────────────────────────────
 
+  querySelector(selector: string): Node | null {
+    return this._ctx.querySelector(this._handle, selector);
+  }
+
+  querySelectorAll(selector: string): Node[] {
+    return this._ctx.querySelectorAll(this._handle, selector);
+  }
+
   getElementById(id: string): Node | null {
     return this._findById(this._ctx._docHandle.firstChild(this._handle.nodeId), id);
   }

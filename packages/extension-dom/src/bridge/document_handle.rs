@@ -342,6 +342,16 @@ impl DocumentHandle {
         Ok(())
     }
 
+    #[qjs(rename = "querySelector")]
+    pub fn query_selector(&self, scope_id: usize, selector: String) -> Result<Option<usize>> {
+        Ok(self.inner.borrow().doc.query_selector(scope_id, &selector))
+    }
+
+    #[qjs(rename = "querySelectorAll")]
+    pub fn query_selector_all(&self, scope_id: usize, selector: String) -> Result<Vec<usize>> {
+        Ok(self.inner.borrow().doc.query_selector_all(scope_id, &selector))
+    }
+
     #[qjs(rename = "removeAttribute")]
     pub fn remove_attribute(&self, node_id: usize, name: String) -> Result<()> {
         let mut inner = self.inner.borrow_mut();
@@ -355,6 +365,7 @@ impl DocumentHandle {
         }
         Ok(())
     }
+    
 
     /// Register a JS callback to receive Events.
     ///

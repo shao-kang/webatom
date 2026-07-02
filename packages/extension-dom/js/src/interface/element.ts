@@ -162,6 +162,36 @@ export class Element extends Node {
     return null;
   }
 
+  querySelector(selector: string): Element | null {
+    return this._ctx.querySelector(this._handle, selector) as Element | null;
+  }
+
+  querySelectorAll(selector: string): Element[] {
+    return this._ctx.querySelectorAll(this._handle, selector) as Element[];
+  }
+
+  getElementsByTagName(qualifiedName: string): Element[] {
+    return this.querySelectorAll(qualifiedName);
+  }
+
+  getElementsByTagNameNS(_namespace: string | null, localName: string): Element[] {
+    return this.querySelectorAll(localName);
+  }
+
+  getElementsByClassName(classNames: string): Element[] {
+    const tokens = classNames.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return [];
+    return this.querySelectorAll(tokens.map(t => `.${t}`).join(''));
+  }
+
+  getElementsByName(name: string): Element[] {
+    return this.querySelectorAll(`[name="${name}"]`);
+  }
+
+  getElementById(id: string): Element | null {
+    return this.querySelector(`#${id}`);
+  }
+
   // ── Mutation ─────────────────────────────────────────────────────────────
 
   append(...nodes: (Node | string)[]): void {

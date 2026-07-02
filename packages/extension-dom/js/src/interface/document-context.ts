@@ -212,6 +212,16 @@ export class DocumentContext {
     return this._wrapId(this._docHandle.head());
   }
 
+  querySelector(scope: NodeHandle, selector: string): Node | null {
+    const id = this._docHandle.querySelector(scope.nodeId, selector);
+    return this._wrapId(id);
+  }
+
+  querySelectorAll(scope: NodeHandle, selector: string): Node[] {
+    return (this._docHandle.querySelectorAll(scope.nodeId, selector) as number[])
+      .flatMap((id) => { const n = this._wrapId(id); return n ? [n] : []; });
+  }
+
   // ── Tree mutation ─────────────────────────────────────────────────────────
 
   appendChild(parent: NodeHandle, child: NodeHandle): void {

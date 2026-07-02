@@ -19,7 +19,7 @@ declare module "webatom_ext_native:dom" {
     nodeValue(nodeId: number): string | null;
     setNodeValue(nodeId: number, value: string | null): void;
     parentNode(nodeId: number): number | null;
-  childNodes(nodeId: number): number[];
+    childNodes(nodeId: number): number[];
     firstChild(nodeId: number): number | null;
     lastChild(nodeId: number): number | null;
     nextSibling(nodeId: number): number | null;
@@ -41,6 +41,8 @@ declare module "webatom_ext_native:dom" {
     hasAttribute(nodeId: number, name: string): boolean;
     attributes(nodeId: number): [string, string][];
 
+    querySelector(scopeId: number, selector: string): number | null;
+    querySelectorAll(scopeId: number, selector: string): number[];
     /** Register a callback invoked (via MacroTask) whenever an Event arrives.
      *  Node-targeted events carry `targetNodeId: number` instead of a handle. */
     onEvent(callback: (raw: {

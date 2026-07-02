@@ -3,6 +3,7 @@ mod document;
 mod element;
 mod html_parser;
 pub mod node;
+mod selector;
 
 pub use attributes::{Attribute, Attributes};
 pub use document::{Document, ScriptInfo, ScriptKind};
