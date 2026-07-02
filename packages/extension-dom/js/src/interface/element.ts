@@ -4,6 +4,7 @@ import { Node } from './node';
 import type { DocumentContext } from './document-context';
 import type { NodeHandle } from './native';
 import { registerNodeType, getTagFactory } from '@/html/index';
+import { notifyAttribute } from './mutation-observer';
 
 // Minimal classList shim backed by className string
 class DOMTokenList {
@@ -78,11 +79,15 @@ export class Element extends Node {
   }
 
   setAttribute(name: string, value: string): void {
+    const oldValue = this._ctx.getAttribute(this._handle, name);
     this._ctx.setAttribute(this._handle, name, value);
+    notifyAttribute(this, name, oldValue);
   }
 
   removeAttribute(name: string): void {
+    const oldValue = this._ctx.getAttribute(this._handle, name);
     this._ctx.removeAttribute(this._handle, name);
+    notifyAttribute(this, name, oldValue);
   }
 
   hasAttribute(name: string): boolean {

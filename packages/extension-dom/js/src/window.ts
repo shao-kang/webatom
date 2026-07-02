@@ -3,6 +3,7 @@ import { Node } from './interface/node';
 import { Element } from './interface/element';
 import { EventTarget } from './interface/event-target';
 import { Event, UIEvent, KeyboardEvent, MouseEvent, FocusEvent, InputEvent } from './interface/event';
+import { MutationObserver, MutationRecord } from './interface/mutation-observer';
 import '@/html/elements';
 
 // ── Location ──────────────────────────────────────────────────────────────
@@ -84,13 +85,15 @@ const windowDefs: Record<string, unknown> = {
   scrollY: 0,
   pageXOffset: 0,
   pageYOffset: 0,
-  Event, 
-  UIEvent, 
-  KeyboardEvent, 
-  MouseEvent, 
-  FocusEvent, 
-  InputEvent, 
+  Event,
+  UIEvent,
+  KeyboardEvent,
+  MouseEvent,
+  FocusEvent,
+  InputEvent,
   EventTarget,
+  MutationObserver,
+  MutationRecord,
 
   // Timers — synchronous stubs; QuickJS has no event loop
   setTimeout(fn: () => void, _ms?: number): number   { fn(); return 0; },

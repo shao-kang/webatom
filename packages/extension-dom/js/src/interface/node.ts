@@ -4,6 +4,8 @@ import { EventTarget } from './event-target';
 export type { NodeHandle } from './native';
 import type { NodeHandle } from './native';
 import type { DocumentContext } from './document-context';
+import type { ObservationEntry } from './mutation-observer';
+import { notifyChildList, notifyCharacterData } from './mutation-observer';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -49,6 +51,7 @@ class Node extends EventTarget {
 
   _ctx: DocumentContext;
   _handle: NodeHandle;
+  _mutationObservers?: ObservationEntry[];
 
   constructor(ctx: DocumentContext, handle: NodeHandle) {
     super();
@@ -114,7 +117,9 @@ class Node extends EventTarget {
   }
 
   set nodeValue(value: string | null) {
+    const oldValue = this._ctx.nodeValue(this._handle);
     this._ctx.setNodeValue(this._handle, value);
+    notifyCharacterData(this, oldValue);
   }
 
   get textContent(): string | null {
@@ -128,16 +133,29 @@ class Node extends EventTarget {
   }
 
   set textContent(value: string | null) {
+    // Collect removed nodes before any deletion (for MutationObserver)
+    const removedNodes: Node[] = [];
     let child = this._ctx.firstChild(this._handle);
+    while (child) {
+      removedNodes.push(child);
+      child = this._ctx.nextSibling(child._handle);
+    }
+    // Remove all children
+    child = this._ctx.firstChild(this._handle);
     while (child) {
       const next = this._ctx.nextSibling(child._handle);
       this._ctx.removeChild(this._handle, child._handle);
       child = next;
     }
+    const addedNodes: Node[] = [];
     if (value) {
       const textHandle = this._ctx.createTextNode(value);
       this._ctx.appendChild(this._handle, textHandle);
+      const textNode = new Node(this._ctx, textHandle);
+      this._ctx._nodes.add(textNode);
+      addedNodes.push(textNode);
     }
+    notifyChildList(this, addedNodes, removedNodes, null, null);
   }
 
   private _collectText(h: NodeHandle): string {
@@ -156,26 +174,36 @@ class Node extends EventTarget {
   // ── Tree mutation ────────────────────────────────────────────────────────
 
   appendChild<T extends Node>(node: T): T {
+    const prevSibling = this.lastChild;
     this._ctx.appendChild(this._handle, node._handle);
+    notifyChildList(this, [node], [], prevSibling, null);
     return node;
   }
 
   removeChild<T extends Node>(child: T): T {
+    const prev = child.previousSibling;
+    const next = child.nextSibling;
     this._ctx.removeChild(this._handle, child._handle);
+    notifyChildList(this, [], [child], prev, next);
     return child;
   }
 
   insertBefore<T extends Node>(node: T, refChild: Node | null): T {
+    const prevSibling = refChild ? refChild.previousSibling : this.lastChild;
     if (refChild === null) {
       this._ctx.appendChild(this._handle, node._handle);
     } else {
       this._ctx.insertBefore(this._handle, node._handle, refChild._handle);
     }
+    notifyChildList(this, [node], [], prevSibling, refChild);
     return node;
   }
 
   replaceChild<T extends Node>(node: Node, child: T): T {
+    const prev = child.previousSibling;
+    const next = child.nextSibling;
     this._ctx.replaceChild(this._handle, node._handle, child._handle);
+    notifyChildList(this, [node], [child], prev, next);
     return child;
   }
 
