@@ -1,6 +1,7 @@
 use rquickjs::AsyncContext;
 
 use crate::event_loop::{EventLoop, EventLoopHandle};
+use crate::js_value_store::JsValueStore;
 
 use super::builder::JsRuntimeBuilder;
 
@@ -32,11 +33,12 @@ pub struct JsRuntime {
     ctx: AsyncContext,
     event_loop: EventLoop,
     shutdown: bool,
+    pub store: JsValueStore,
 }
 
 impl JsRuntime {
-    pub(super) fn new(ctx: AsyncContext, event_loop: EventLoop) -> Self {
-        Self { ctx, event_loop, shutdown: false }
+    pub(super) fn new(ctx: AsyncContext, event_loop: EventLoop, store: JsValueStore) -> Self {
+        Self { ctx, event_loop, shutdown: false, store }
     }
 
     pub fn builder() -> JsRuntimeBuilder {

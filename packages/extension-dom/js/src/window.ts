@@ -2,7 +2,7 @@ import { Document } from './interface/document';
 import { Node } from './interface/node';
 import { Element } from './interface/element';
 import { EventTarget } from './interface/event-target';
-import { Event, UIEvent, KeyboardEvent, MouseEvent, FocusEvent, InputEvent } from './interface/event';
+import { Event, CustomEvent, UIEvent, KeyboardEvent, MouseEvent, FocusEvent, InputEvent } from './interface/event';
 import { MutationObserver, MutationRecord } from './interface/mutation-observer';
 import '@/html/elements';
 
@@ -86,6 +86,7 @@ const windowDefs: Record<string, unknown> = {
   pageXOffset: 0,
   pageYOffset: 0,
   Event,
+  CustomEvent,
   UIEvent,
   KeyboardEvent,
   MouseEvent,

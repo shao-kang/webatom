@@ -60,6 +60,17 @@ export class Event {
   composedPath(): any[] { return []; }
 }
 
+// ── CustomEvent ───────────────────────────────────────────────────────────────
+
+export class CustomEvent extends Event {
+  readonly detail: unknown;
+
+  constructor(type: string, init?: EventInit & { detail?: unknown }) {
+    super(type, init);
+    this.detail = init?.detail ?? null;
+  }
+}
+
 // ── UIEvent ───────────────────────────────────────────────────────────────────
 
 export class UIEvent extends Event {

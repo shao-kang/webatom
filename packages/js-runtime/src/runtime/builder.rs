@@ -4,6 +4,7 @@ use rquickjs::AsyncContext;
 
 use crate::event_loop::EventLoop;
 use crate::extension::{Extension, ExtensionRegistry};
+use crate::js_value_store::JsValueStore;
 use crate::module::setup_module_system;
 use crate::web_api::default_extensions;
 
@@ -60,14 +61,16 @@ impl JsRuntimeBuilder {
 
         let ctx = AsyncContext::full(event_loop.runtime()).await?;
 
+        let store = JsValueStore::new();
         let extension_modules = registry.extension_modules.clone();
         ctx.with(|qctx| {
             qctx.store_userdata(extension_modules)?;
             qctx.store_userdata(host.clone())?;
+            qctx.store_userdata(store.clone())?;
             registry.apply(&qctx, &host)
         })
         .await?;
 
-        Ok(JsRuntime::new(ctx, event_loop))
+        Ok(JsRuntime::new(ctx, event_loop, store))
     }
 }
