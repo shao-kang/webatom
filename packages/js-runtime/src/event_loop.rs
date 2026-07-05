@@ -3,6 +3,7 @@ pub mod handle;
 pub mod idle;
 pub mod render_scheduler;
 pub(crate) mod task;
+pub mod event;
 
 pub use event_loop_impl::EventLoop;
 pub use handle::{EventLoopHandle, HostBridge, KeepAliveCount, KeepaliveGuard, RuntimeBridge, RuntimeIo, SchedulerBridge};

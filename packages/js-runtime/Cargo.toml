@@ -18,6 +18,7 @@ tokio = { workspace = true }
 tracing = {workspace = true}
 tracing-subscriber = { workspace = true }
 webatom-js-runtime-macro = { workspace = true }
+strum = { version = "0.28.0", features = ["derive", "enum_iter"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "net", "io-util"] }
