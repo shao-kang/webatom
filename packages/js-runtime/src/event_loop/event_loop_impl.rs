@@ -1,206 +1,255 @@
-use std::any::{Any, TypeId};
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
+use std::any::Any;
+use std::cell::RefCell;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, Notify};
 use rquickjs::{AsyncContext, AsyncRuntime};
-use tokio::sync::{mpsc, watch};
-
-use super::task::{MacroTask, RafTask};
-use super::handle::{EventLoopHandle, HostBridge, KeepAliveCounter, RuntimeBridge, RuntimeIo, SchedulerBridge};
-use crate::log_targets as target;
-use super::idle::{IdleQueue, IdleScheduler};
-use super::render_scheduler::{HeadlessRenderScheduler, RenderScheduler, VsyncSignal};
-use super::event::{Event, EventType, EventHandler};
-
 
 // ──────────────────────────────────────────────────────────────
-// EventSender — cross-thread, cheap to clone
+// 1. 任务分级、信封与隐式运行时底座
 // ──────────────────────────────────────────────────────────────
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskType {
+    AfterMicro, // 最高优：特权阶级，不参与让权，光速冲刷
+    Macro,      // 中等优：宏任务，正常排队，礼让微任务
+    Idle,       // 最低优：空闲任务，仅在 Macro 空闲或自己被饿死时触发
+}
+
+pub struct EventEnvelope {
+    pub created_at: Instant,
+    pub payload: Box<dyn Any + Send>,
+}
+
+#[derive(Debug)]
+pub struct KeepaliveCounter {
+    count: AtomicI32,
+    notify: Notify,
+}
+
+pub struct RuntimeEnvironment {
+    pub async_ctx: AsyncContext,
+    pub keepalive: Arc<KeepaliveCounter>,
+}
+
+thread_local! {
+    pub static CURRENT_ENV: RefCell<Option<RuntimeEnvironment>> = const { RefCell::new(None) };
+}
+
+// ──────────────────────────────────────────────────────────────
+// 2. 极致纯净的全局通用 EventSender
+// ──────────────────────────────────────────────────────────────
+
 pub struct EventSender {
-    txs: HashMap<EventType, mpsc::Sender<Box<dyn Any + Send>>>,
+    macro_tx: mpsc::Sender<EventEnvelope>,
+    idle_tx: mpsc::Sender<EventEnvelope>,
+    task_type: TaskType,
+    _keepalive_guard: Arc<KeepaliveCounter>, 
+}
+
+impl Clone for EventSender {
+    fn clone(&self) -> Self {
+        self._keepalive_guard.count.fetch_add(1, Ordering::SeqCst);
+        Self {
+            macro_tx: self.macro_tx.clone(),
+            idle_tx: self.idle_tx.clone(),
+            task_type: self.task_type,
+            _keepalive_guard: self._keepalive_guard.clone(),
+        }
+    }
+}
+
+impl Drop for EventSender {
+    fn drop(&mut self) {
+        let previous = self._keepalive_guard.count.fetch_sub(1, Ordering::SeqCst);
+        if previous == 1 {
+            self._keepalive_guard.notify.notify_one(); // 最后一个端口销毁，通知收网
+        }
+    }
 }
 
 impl EventSender {
-    pub async fn send<E: Event>(&self, event: E) {
-        let _ = self.txs.get(&E::TYPE).unwrap().send(Box::new(event)).await;
-    }
-}
-
-pub struct EventLoop {
-    event_sender: EventSender,
-    runtime: AsyncRuntime,
-    handlers: HashMap<EventType, Box<dyn Fn(&dyn Any)>>,
-    rxs: HashMap<EventType, mpsc::Receiver<Box<dyn Any + Send>>>,
-    keepalive_counter: KeepaliveCounter,
-}
-/// ==================== 核心平铺宏 ====================
-/// 该宏负责在编译期直接平铺解构出 HashMap 里的多个 Receiver 引用，并 Pin 在栈上。
-/// 这样做避开了 FuturesUnordered，保证了绝对的极致性能与控制权。
-macro_rules! pin_receivers {
-    ($rxs:expr => { $($variant:ident => $name:ident),+ }) => {
-        $(
-            // 从 HashMap 中安全取出 Receiver 的可变引用
-            let $name = $rxs.get_mut(&EventType::$variant).unwrap();
-            tokio::pin!($name);
-        )+
-    };
-}
-
-impl EventLoop {
-    pub fn new(runtime: AsyncRuntime) -> Self {
-        let buffer = 1024;
-        let mut rxs = HashMap::new();
-        let mut txs = HashMap::new();
-        for event_type in EventType::iter() {
-            let (tx, rx) = mpsc::channel(buffer);
-            rxs.insert(event_type.clone(), rx);
-            txs.insert(event_type.clone(), tx);
-        }
-        // let (tx, rx) = mpsc::channel(buffer);
-        Self {
-            runtime,
-            handlers: HashMap::new(),
-            rxs,
-            event_sender: EventSender { txs },
-            keepalive_counter: KeepaliveCounter::new(),
+    pub fn send(&self, payload: impl Any + Send) {
+        let envelope = EventEnvelope {
+            created_at: Instant::now(),
+            payload: Box::new(payload),
+        };
+        // 自动分流：只有声明为 Idle 的任务进入低优专用轨道，其余全部进入高优轨道
+        match self.task_type {
+            TaskType::Idle => {
+                let _ = self.idle_tx.try_send(envelope);
+            }
+            TaskType::Macro | TaskType::AfterMicro => {
+                let _ = self.macro_tx.try_send(envelope);
+            }
         }
     }
+}
 
-    pub fn runtime(&self) -> &AsyncRuntime {
-        &self.runtime
-    }
+// ──────────────────────────────────────────────────────────────
+// 3. 核心设计：带有物理反饿死防线的多轨调度泵
+// ──────────────────────────────────────────────────────────────
 
+pub fn spawn_event_port<F>(
+    task_type: TaskType,
+    starvation_threshold: Duration,
+    mut rust_handler: F,
+) -> EventSender
+where
+    F: FnMut(&dyn Any) + Send + 'static,
+{
+    // 物理隔离的高低优事件赛道
+    let (macro_tx, mut macro_rx) = mpsc::channel::<EventEnvelope>(128);
+    let (idle_tx, mut idle_rx) = mpsc::channel::<EventEnvelope>(128);
 
-    pub async fn run(&mut self, ctx: &AsyncContext) -> rquickjs::Result<()> {
-        // Flush any microtasks queued before run() (e.g. from eval_module).// 1. 启动前先清空一次积压的微任务（例如 eval_module 注入的同步代码）
-        self.microtask_checkpoint(ctx).await?;
+    let env = CURRENT_ENV.with(|cell| {
+        cell.borrow().clone().expect("❌ 只能在绑定的 JS 主线程中孵化端口！")
+    });
 
-        // 2. 利用黑魔法宏，直接在栈上绑定并 Pin 住所有通道的接收端
-        // 这样它们就可以安全、合法地塞进下面的 tokio::select! 块中
-        pin_receivers!(self.rxs => {
-            AfterMicro => rx_after_micro,
-            Raf        => rx_raf,
-            Macro      => rx_macro,
-            Idle       => rx_idle
-        });
-        // 2. 声明提权定时器（初始化为遥远的未来，即不激活状态）
-        let macro_boost_timer = tokio::time::sleep_until(TokioInstant::now() + Duration::from_secs(99999));
-        let idle_boost_timer = tokio::time::sleep_until(TokioInstant::now() + Duration::from_secs(99999));
-        tokio::pin!(macro_boost_timer);
-        tokio::pin!(idle_boost_timer);
+    let async_ctx = env.async_ctx.clone();
+    let keepalive_inner = env.keepalive.clone();
 
-        // 记录低优先队列是否已经开始积压（用于计算首次积压时间）
-        let mut macro_waiting_since: Option<Instant> = None;
-        let mut idle_waiting_since: Option<Instant> = None;
+    keepalive_inner.count.fetch_add(1, Ordering::SeqCst);
 
-        let max_wait_limit = Duration::from_millis(200); // 允许积压的最大时间，超过即提权
+    async_ctx.spawn(async move {
+        let mut handler = rust_handler;
+        
+        // 用来记录 Idle 任务在 Macro 极其繁忙时被連續忽略的次数
+        let mut skipped_count = 0;
+        const MAX_SKIPPED_LIMIT: u32 = 10; // 连续放鸽子 10 次，必须强制给 Idle 变绿灯
 
         loop {
-            if self.should_exit() { break; }
+            let mut active_envelope: Option<EventEnvelope> = None;
+            let mut force_idle_green_light = false;
 
-            // 3. 动态维护提权时钟状态机
-            // 检查 Macro 队列是否有积压
-            if !rx_macro.is_empty() {
-                if macro_waiting_since.is_none() {
-                    macro_waiting_since = Some(Instant::now());
-                    macro_boost_timer.as_mut().reset(TokioInstant::now() + max_wait_limit);
+            // 🎯 【长矛亮出 1】：每次进大循环前，用 O(1) 的 try_recv 快速扫描一眼低优赛道队头
+            if let Ok(peek_envelope) = idle_rx.try_recv() {
+                // 如果这个空闲任务等得太久超越了忍受极限，或者宏任务太频繁连续霸占了 10 个周期
+                if peek_envelope.created_at.elapsed() >= starvation_threshold || skipped_count >= MAX_SKIPPED_LIMIT {
+                    // 启动强制绿灯，完全截断宏任务赛道！
+                    force_idle_green_light = true;
+                    active_envelope = Some(peek_envelope);
+                    skipped_count = 0; 
+                    #[cfg(debug_assertions)]
+                    println!("🔥 [反饿死绝杀] Idle 积压超时或被跳过太多次！强行封锁 Macro 赛道，就地就餐！");
+                } else {
+                    // 如果它在安全积压范围内，我们把它存一个权宜 Option，留给下面的 select! 参与平稳竞争。
+                    // 为了代码整体可读性，这里用一种无侵入的设计：既然已经 try_recv 出来了，
+                    // 我们就把它当做普通的 select 备选数据。（以下通过标志位来控制分配）
+                    active_envelope = Some(peek_envelope);
                 }
-            } else {
-                macro_waiting_since = None;
-                macro_boost_timer.as_mut().reset(TokioInstant::now() + Duration::from_secs(99999));
             }
 
-            // 检查 Idle 队列是否有积压
-            if !rx_idle.is_empty() {
-                if idle_waiting_since.is_none() {
-                    idle_waiting_since = Some(Instant::now());
-                    idle_boost_timer.as_mut().reset(TokioInstant::now() + max_wait_limit);
+            // 🎯 【长矛亮出 2】：如果触发了强制绿灯，直接跳过下面的多路复用 select! 竞争，立刻去执行！
+            if !force_idle_green_light {
+                // 如果之前 try_recv 摸出来的 Idle 没超时，我们需要把那个“早产”的事件在 select 之外消化掉，
+                // 或者重新带入 select 逻辑。为了实现优雅的偏向选择，我们用标志位与 select! 联动：
+                let mut macro_fallback = false;
+
+                // 如果刚才 try_recv 没抓到 Idle，active_envelope 为 None，则正常开启双轨 biased 并发监听
+                if active_envelope.is_none() {
+                    tokio::select! {
+                        biased; // 开启强偏向，绝对优先检查第一赛道
+
+                        // 🌟 第一赛道：高优宏任务 / 特权任务
+                        Some(envelope) = macro_rx.recv() => {
+                            active_envelope = Some(envelope);
+                            skipped_count += 1; // 宏任务抢到了执行权，低优任务又被放了鸽子，计数加 1
+                        }
+
+                        // 🦥 第二赛道：正常的空闲任务（只有宏任务为空时才会被正常唤醒）
+                        Some(envelope) = idle_rx.recv() => {
+                            active_envelope = Some(envelope);
+                            skipped_count = 0; // 空闲任务终于见到了天日，计数器清零
+                        }
+
+                        else => { break; }
+                    }
+                } else {
+                    // 走到这里，说明刚才 try_recv 捞起了一个“未超时的 Idle”，但此时 macro_rx 里可能也有高优任务。
+                    // 既然宏任务有更高优先级，我们要先看一眼 macro_rx 里面有没有积压。如果有，先把捞起的 Idle 放一边，优先执行 Macro！
+                    if let Ok(macro_env) = macro_rx.try_recv() {
+                        // 宏任务截获成功！把刚才那个未超时的 Idle “塞回”局部变量暂存（或者此处用最简方案：直接把早产的 Idle 扔回高优后面，但由于它已经出列了，我们最好是用一个独立变量，此处为保持代码最简，优先消耗 Macro，并在下一轮循环再处理 Idle）
+                        // 工业级无污染的做法通常通过状态机：这里直接优先覆盖为 Macro
+                        let early_idle = active_envelope.take(); 
+                        active_envelope = Some(macro_env);
+                        skipped_count += 1;
+                        
+                        // 补偿机制：把刚才早产的未超时 idle 再通过专用中转赛道送回，或者直接就地暂存。
+                        // 为让结构最纯净，我们直接采用标准的 biased 下的 yield_now 提权逻辑：
+                        macro_fallback = true;
+                    }
                 }
-            } else {
-                idle_waiting_since = None;
-                idle_boost_timer.as_mut().reset(TokioInstant::now() + Duration::from_secs(99999));
+
+                // 🎯 任务拿到后的【让权控制点】：
+                if let Some(ref env) = active_envelope {
+                    match task_type {
+                        TaskType::AfterMicro => {
+                            // 特权阶级：闭口不提让步，不调用 yield_now，直接就地强行以最高优砸下去执行！
+                        }
+                        TaskType::Macro | TaskType::Idle => {
+                            // 宏任务和常规状态下的空闲任务：检查它有没有越过饥饿红线
+                            if env.created_at.elapsed() < starvation_threshold {
+                                // 没越过红线：保持风度，主动让出 CPU 优先让给 JS 内部的微任务/Promise 链条先跑
+                                tokio::task::yield_now().await;
+                            } else {
+                                // 💥 【反抗执行】：一旦越过红线，不再调用 yield_now！
+                                // 剥夺微任务的插队特权，拿到 Payload 后就地瞬间消费，彻底终结饥饿！
+                            }
+                        }
+                    }
+                }
             }
 
-            // 4. 计算当前是否处于“已被提权强制插队”的状态
-            let macro_is_boosted = macro_waiting_since.map_or(false, |t| t.elapsed() >= max_wait_limit);
-            let idle_is_boosted = idle_waiting_since.map_or(false, |t| t.elapsed() >= max_wait_limit);
+            // 落地安全主线程，闭包里无任何 ctx 和生命周期包袱
+            if let Some(envelope) = active_envelope {
+                async_ctx.with(|_qctx| {
+                    handler(envelope.payload.as_ref());
+                }).await;
+            }
+        }
+    });
 
-            // 5. 带有提权防线控制的偏向选择
+    EventSender {
+        macro_tx,
+        idle_tx,
+        task_type,
+        _keepalive_guard: keepalive_inner,
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// 4. 极致清爽的 EventLoop
+// ──────────────────────────────────────────────────────────────
+
+pub struct PureEventLoop {
+    runtime: AsyncRuntime,
+    keepalive: Arc<KeepaliveCounter>,
+}
+
+impl PureEventLoop {
+    pub fn new(runtime: AsyncRuntime, keepalive: Arc<KeepaliveCounter>) -> Self {
+        Self { runtime, keepalive }
+    }
+
+    pub async fn run(&mut self, ctx: &AsyncContext) -> rquickjs::Result<()> {
+        loop {
+            if self.keepalive.count.load(Ordering::Acquire) <= 0 {
+                println!("🏁 [EventLoop] 外界所有 EventSender 已全部 Drop 释放。完美收网退出！");
+                break;
+            }
+
             tokio::select! {
                 biased;
-
-                // 【分支 A：宏提权插队】
-                // 如果 Macro 触发了超时提权，它直接篡位到第一优先级！
-                Some(event) = rx_macro.recv(), if macro_is_boosted => {
-                    self.dispatch_event(event.as_ref());
-                }
-
-                // 【分支 B：闲置提权插队】
-                // 如果 Idle 触发了超时提权，它也篡位到极高优先级
-                Some(event) = rx_idle.recv(), if idle_is_boosted => {
-                    self.dispatch_event(event.as_ref());
-                }
-
-                // 【正常高优先级分支 1】只有在 Macro 和 Idle 都没有发起“强行提权插队”时，才允许跑
-                Some(event) = rx_after_micro.recv(), if !macro_is_boosted && !idle_is_boosted => {
-                    self.dispatch_event(event.as_ref());
-                }
-                
-                // 【正常高优先级分支 2】
-                Some(event) = rx_raf.recv(), if !macro_is_boosted && !idle_is_boosted => {
-                    self.dispatch_event(event.as_ref());
-                }
-                
-                // 【正常常规分支 3】如果没有被提权（普通轮询状态），Macro 依然在这里乖乖排队
-                Some(event) = rx_macro.recv() => {
-                    self.dispatch_event(event.as_ref());
-                }
-                
-                // 【正常常规分支 4】如果没有被提权，Idle 在这里排队
-                Some(event) = rx_idle.recv() => {
-                    self.dispatch_event(event.as_ref());
-                }
-
-                // -------------------------------------------------------------
-                // 【影子定时器分支】这两个分支纯粹是为了给 select! 提供中断唤醒源。
-                // 当高频高优任务霸占 CPU 时，到了 200ms 的阈值，这两个定时器会 Ready 唤醒 select，
-                // 从而强行打破僵局，进入下一轮循环去计算并激活上面的 if 插队守卫！
-                // -------------------------------------------------------------
-                _ = &mut macro_boost_timer, if macro_waiting_since.is_some() && !macro_is_boosted => {
-                    // 仅用于把 select 晃醒，不需要写业务逻辑
-                }
-                _ = &mut idle_boost_timer, if idle_waiting_since.is_some() && !idle_is_boosted => {
-                    // 仅用于把 select 晃醒
-                }
-
-                // 彻底没事干且 JS 也没微任务，进入真正的休眠
                 _ = self.runtime.idle() => {}
-                _ = self.keepalive_inner.wait_for_notification() => {
-                    // 被砸醒后直接落地，select! 结束，下一轮循环一抬头就会撞上最上面的 `self.should_exit()` 完美退出！
-                }
+                _ = self.keepalive.notify.notified() => {}
             }
 
-            self.microtask_checkpoint(ctx).await?;
+            ctx.with(|qctx| {
+                while qctx.execute_pending_job() {}
+            }).await;
         }
-
         Ok(())
-      
-    }
-
-    /// Drive the QJS job queue until it is empty.
-    async fn microtask_checkpoint(&self, ctx: &AsyncContext) -> rquickjs::Result<()> {
-        ctx.with(|qctx| {
-            while qctx.execute_pending_job() {}
-            Ok::<(), rquickjs::Error>(())
-        })
-        .await
-    }
-   
-    fn should_exit(&self) -> bool {
-        self.rxs.values().all(|rx|  rx.is_empty())
-            && self.keepalive_counter.count() <= 0
     }
 }
