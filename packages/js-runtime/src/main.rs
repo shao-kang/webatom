@@ -18,9 +18,9 @@ async fn main() {
 
     let mut runtime = JsRuntime::builder()
         .build()
-        .await
+        // .await
         .unwrap();
 
-    runtime.eval_module(&abs_path_str, source).await.unwrap();
+    // runtime.eval_module(&abs_path_str, source).await.unwrap();
     runtime.run().await.unwrap();
 }

@@ -4,7 +4,7 @@ use std::path::Path;
 use rquickjs::{Ctx, Error, Result};
 use rquickjs::loader::{ImportAttributes, Resolver};
 
-use crate::extension::ExtensionModules;
+
 
 pub struct EsmResolver {
     pub import_map: HashMap<String, String>,
@@ -18,11 +18,11 @@ impl EsmResolver {
 
 impl Resolver for EsmResolver {
     fn resolve<'js>(&mut self, ctx: &Ctx<'js>, base: &str, name: &str, _attr: Option<ImportAttributes<'js>>) -> Result<String> {
-        if let Some(modules) = ctx.userdata::<ExtensionModules>() {
-            if modules.contains(name) {
-                return Ok(name.to_string());
-            }
-        }
+        // if let Some(modules) = ctx.userdata::<ExtensionModules>() {
+        //     if modules.contains(name) {
+        //         return Ok(name.to_string());
+        //     }
+        // }
         // Self-contained / absolute URL schemes — pass through as-is.
         if name.starts_with("data:")
             || name.starts_with("http://")

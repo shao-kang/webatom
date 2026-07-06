@@ -1,76 +1,57 @@
-use std::collections::HashMap;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+use rquickjs::AsyncRuntime;
 
-use rquickjs::AsyncContext;
+// 引入你之前定义好的核心组件
+pub use crate::extension::{Extension, ExtensionSet};
+pub use crate::runtime::JsRuntime;
 
-use crate::event_loop::EventLoop;
-use crate::extension::{Extension, ExtensionRegistry};
-use crate::js_value_store::JsValueStore;
-use crate::module::setup_module_system;
-use crate::web_api::default_extensions;
-
-use super::runtime::JsRuntime;
-
+/// 🏎️ 现代运行时的高效装配流水线
 pub struct JsRuntimeBuilder {
-    extensions: Vec<Box<dyn Extension>>,
-    with_defaults: bool,
-    import_map: HashMap<String, String>,
+    extensions: ExtensionSet,
+    cancel_token: Option<CancellationToken>,
+}
+
+impl Default for JsRuntimeBuilder {
+    /// 默认状态：没有外挂插件，但全自动准备好退出拉闸安全大闸
+    fn default() -> Self {
+        Self {
+            extensions: Vec::new(),
+            cancel_token: None,
+        }
+    }
 }
 
 impl JsRuntimeBuilder {
+    /// 1. 开启建造者流水线
     pub fn new() -> Self {
-        Self {
-            extensions: Vec::new(),
-            with_defaults: true,
-            import_map: HashMap::new(),
-        }
+        Self::default()
     }
 
-    pub fn no_defaults(mut self) -> Self {
-        self.with_defaults = false;
-        self
-    }
-
-    pub fn import_map(mut self, map: HashMap<String, String>) -> Self {
-        self.import_map = map;
-        self
-    }
-
+    /// 2. 链式注入单个原生扩展插件（最常用的爽点方法）
     pub fn with_extension(mut self, ext: impl Extension + 'static) -> Self {
         self.extensions.push(Box::new(ext));
         self
     }
 
-    pub async fn build(self) -> rquickjs::Result<JsRuntime> {
-        let mut registry = ExtensionRegistry::new();
+    /// 3. 一次性批量打包注入一组插件
+    pub fn with_extensions(mut self, mut exts: ExtensionSet) -> Self {
+        self.extensions.append(&mut exts);
+        self
+    }
 
-        if self.with_defaults {
-            for ext in default_extensions() {
-                registry.register_boxed(ext);
-            }
-        }
-        for ext in self.extensions {
-            // Unbox and re-register; Extension is object-safe so we go through the trait.
-            registry.register_boxed(ext);
-        }
+    /// 4. 自定义取消令牌（如果不传，build 时会自动生成一个默认的）
+    pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
+        self.cancel_token = Some(token);
+        self
+    }
 
-        let runtime = rquickjs::AsyncRuntime::new()?;
-        setup_module_system(&runtime, self.import_map).await;
+    /// 🚀 最终一键点火，重组并孵化出完全体的 JsRuntime
+    pub fn build(self) -> rquickjs::Result<JsRuntime> {
+        
+        // 如果用户没传令牌，全自动现场生成一个，绝不给用户添堵
+        let cancel_token = self.cancel_token.unwrap_or_else(CancellationToken::new);
 
-        let event_loop = EventLoop::new(runtime);
-        let host = event_loop.host.clone();
-
-        let ctx = AsyncContext::full(event_loop.runtime()).await?;
-
-        let store = JsValueStore::new();
-        let extension_modules = registry.extension_modules.clone();
-        ctx.with(|qctx| {
-            qctx.store_userdata(extension_modules)?;
-            qctx.store_userdata(host.clone())?;
-            qctx.store_userdata(store.clone())?;
-            registry.apply(&qctx, &host)
-        })
-        .await?;
-
-        Ok(JsRuntime::new(ctx, event_loop, store))
+        Ok(JsRuntime::new( self.extensions, cancel_token))
     }
 }
