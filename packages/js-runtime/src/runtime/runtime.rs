@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use rquickjs::{AsyncContext, AsyncRuntime, Module, FromJs};
 
 use crate::storage::{GlobalRoomStorage, RoomMemoryCenter};
-use crate::extension::{ExtensionContext, ExtensionSet};
+use crate::extension::{ExtensionContext, ExtensionSet, Extension};
 use crate::event_loop::EventLoop;
 
 use super::JsRuntimeBuilder;
@@ -34,16 +34,17 @@ impl JsContext {
             ctx.store_userdata(memory_center);
 
             for ext in extensions.iter() {
-                let ext_ctx = ExtensionContext {
-                    ctx: &ctx,
-                    async_context: &inner_ctx,
-                    cancel_token: room_cancel_token.clone(),
-                };
+                let ext_ctx = ExtensionContext::new(
+                    &ctx,
+                    &inner_ctx,
+                    room_cancel_token.clone(),
+                    ext.name().to_string(),
+                );
                 ext.install(&ext_ctx)?;
             }
 
             for ext in extensions.iter() {
-                if let Some(glue_code) = ext.js_glue(&ctx) {
+                if let Some(glue_code) = ext.get_js_source(&ctx) {
                     ctx.eval::<(), _>(glue_code)?;
                 }
             }
@@ -155,5 +156,135 @@ impl JsRuntime {
         
         // 彻底告别 ctx 传参，面向整个底层 Runtime 的生命周期进行绝对审判！
         event_loop.run().await
+    }
+
+
+
+    // 🚀 终极合闸：无需外来传参，直接从 self.extensions 的 Arc 宇宙中汲取插件
+    // pub async fn bootstrap_extensions(&self) -> rquickjs::Result<()> {
+        
+    //     // -----------------------------------------------------------------
+    //     // 🔒 第一道防线：全宇宙模块名主权审查（防止多个插件申请相同模块）
+    //     // -----------------------------------------------------------------
+    //     let mut global_module_registry: HashMap<String, &'static str> = HashMap::new();
+        
+    //     // Directly look into self.extensions via Arc borrowing
+    //     for ext in self.extensions.iter() {
+    //         let ext_name = ext.name();
+    //         for specifier in ext.module_specifiers() {
+    //             let specifier_str = specifier.to_string();
+                
+    //             if let Some(existing_owner) = global_module_registry.get(&specifier_str) {
+    //                 panic!(
+    //                     "\n❌ [Runtime Fatal Error]: 发生模块说明符命名撞车冲突！\n\
+    //                     👉 冲突模块: `{}`\n\
+    //                     🚨 冲突详情: 插件 `{}` 企图注册该模块，但该模块的主权早已被插件 `{}` 占领！\n",
+    //                     specifier_str, ext_name, existing_owner
+    //                 );
+    //             }
+    //             global_module_registry.insert(specifier_str, ext_name);
+    //         }
+    //     }
+
+    //     // -----------------------------------------------------------------
+    //     // 🔗 第二道防线：基于引用的拓扑排序（解决 Arc 无法 Move 所有权的问题）
+    //     // -----------------------------------------------------------------
+    //     let sorted_extensions: Vec<&dyn Extension> = self.topological_sort_extensions_ref();
+
+    //     // -----------------------------------------------------------------
+    //     // ⚡ 核心阶段：按照拓扑安全顺序，依次执行插件的 install()
+    //     // -----------------------------------------------------------------
+    //     // 注意：rquickjs 异步上下文需要通过 runtime 来获取当前线程的 context
+    //     // 假设这里可以通过 self.runtime.with 或类似的机制拿到 ctx
+    //     self.runtime.with(|ctx| {
+    //         for ext in &sorted_extensions {
+    //             let ext_ctx = ExtensionContext {
+    //                 ctx: &ctx,
+    //                 async_context: &self.runtime, // 对应你结构体里的 AsyncRuntime/AsyncContext
+    //                 cancel_token: self.cancel_token.clone(), // 🎯 完美利用 self 的熔断 Token
+    //                 current_plugin_name: ext.name(),
+    //             };
+                
+    //             ext.install(&ext_ctx)?;
+    //         }
+    //         Ok::<(), rquickjs::Error>(())
+    //     }).await?;
+
+    //     // -----------------------------------------------------------------
+    //     // 🕵️‍♂️ 第三道防线：孤儿模块检查（货不对板大清查）
+    //     // -----------------------------------------------------------------
+    //     self.runtime.with(|ctx| {
+    //         for ext in &sorted_extensions {
+    //             for specifier in ext.module_specifiers() {
+    //                 let has_js_source = ext.get_js_source(specifier).is_some();
+    //                 let is_rust_declared = rquickjs::Module::get(ctx, *specifier).is_ok();
+
+    //                 if !has_js_source && !is_rust_declared {
+    //                     panic!(
+    //                         "\n❌ [Runtime Fatal Error]: 插件 `{}` 的模块 `{}` 发生了构建方式丢失！\n",
+    //                         ext.name(), specifier
+    //                     );
+    //                 }
+
+    //                 if has_js_source && is_rust_declared {
+    //                     panic!(
+    //                         "\n❌ [Runtime Fatal Error]: 插件 `{}` 的模块 `{}` 发生了构建冲突！\n",
+    //                         ext.name(), specifier
+    //                     );
+    //                 }
+    //             }
+    //         }
+    //         Ok::<(), rquickjs::Error>(())
+    //     }).await?;
+
+    //     println!("🎉 [Runtime System] 宿主从内部顺利提取 `Arc<ExtensionSet>` 并通过三道防线安全起飞！");
+    //     Ok(())
+    // }
+
+    /// 🔗 升级版拓扑排序：只对借用指针 `&dyn Extension` 进行排序，完美契合 Arc 
+    fn topological_sort_extensions_ref(&self) -> Vec<&dyn Extension> {
+        // 建立名字到引用的映射
+        let mut ext_map: HashMap<&'static str, &dyn Extension> = self.extensions
+            .iter()
+            .map(|e| (e.name(), e.as_ref()))
+            .collect();
+            
+        let mut sorted = Vec::new();
+        let mut visited = HashSet::new();
+        let mut visiting = HashSet::new();
+
+        fn dfs<'a>(
+            name: &'static str,
+            ext_map: &HashMap<&'static str, &'a dyn Extension>,
+            visited: &mut HashSet<&'static str>,
+            visiting: &mut HashSet<&'static str>,
+            sorted: &mut Vec<&'a dyn Extension>,
+        ) {
+            if visited.contains(name) { return; }
+            if visiting.contains(name) {
+                panic!("\n🚨 [Runtime Fatal Error]: 发现插件循环依赖循环圈！涉及插件: `{}`\n", name);
+            }
+            visiting.insert(name);
+
+            if let Some(ext) = ext_map.get(name) {
+                for dep in ext.dependencies() {
+                    dfs(dep, ext_map, visited, visiting, sorted);
+                }
+                
+                visiting.remove(name);
+                visited.insert(name);
+                sorted.push(*ext);
+            } else {
+                visiting.remove(name);
+                visited.insert(name);
+            }
+        }
+
+        let keys: Vec<&'static str> = ext_map.keys().cloned().collect();
+        for key in keys {
+            dfs(key, &ext_map, &mut visited, &mut visiting, &mut sorted);
+        }
+
+        sorted
     }
 }

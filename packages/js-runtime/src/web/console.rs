@@ -1,6 +1,6 @@
 use rquickjs::{Ctx, Function, Result, module::{Declarations, Exports, ModuleDef}};
 
-use crate::event_loop::HostBridge;
+use crate::{extension::ExtensionContext, runtime::runtime::JsContext};
 use crate::extension::Extension;
 use crate::log_targets as target;
 
@@ -82,26 +82,32 @@ impl Extension for ConsoleExtension {
         "console"
     }
 
-    fn native_module_specifiers(&self) -> &'static [&'static str] {
+    fn module_specifiers(&self) -> &'static [&'static str] {
         &["@webatom/console"]
     }
 
-    fn install(&self, ctx: &Ctx<'_>, _host: &HostBridge) -> rquickjs::Result<()> {
-        rquickjs::Module::declare_def::<ConsoleModule, _>(ctx.clone(), "@webatom/console")?;
+    fn install(&self, extension_context: &ExtensionContext<'_, '_>) -> rquickjs::Result<()> {
+        rquickjs::Module::declare_def::<ConsoleModule, _>(extension_context.ctx.clone(), "@webatom/console")?;
         Ok(())
     }
 
-    fn js_glue(&self) -> Option<&'static str> {
-        Some(concat!(
-            "import * as _c from '@webatom/console';\n",
-            "const _j = (...a) => a.map(String).join(' ');\n",
-            "globalThis.console = {\n",
-            "  log:   (...a) => _c.log(_j(...a)),\n",
-            "  info:  (...a) => _c.info(_j(...a)),\n",
-            "  warn:  (...a) => _c.warn(_j(...a)),\n",
-            "  error: (...a) => _c.error(_j(...a)),\n",
-            "  debug: (...a) => _c.debug(_j(...a)),\n",
-            "};\n",
-        ))
+    fn get_js_source(&self, specifiers: &str) -> Option<String> {
+        match specifiers {
+            "@webatom/console" => 
+                {
+                    Some(concat!(
+                    "import * as _c from '@webatom/console';\n",
+                    "const _j = (...a) => a.map(String).join(' ');\n",
+                    "globalThis.console = {\n",
+                    "  log:   (...a) => _c.log(_j(...a)),\n",
+                    "  info:  (...a) => _c.info(_j(...a)),\n",
+                    "  warn:  (...a) => _c.warn(_j(...a)),\n",
+                    "  error: (...a) => _c.error(_j(...a)),\n",
+                    "  debug: (...a) => _c.debug(_j(...a)),\n",
+                    "};\n").to_string())
+                }
+            
+            _ => None
+        }
     }
 }

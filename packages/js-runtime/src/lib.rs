@@ -5,7 +5,7 @@ pub mod log_targets;
 pub mod module;
 mod storage;
 pub mod runtime;
-// pub mod web_api;
+pub mod web;
 
 pub use extension::Extension;
 pub use runtime::{JsRuntime, JsRuntimeBuilder};
