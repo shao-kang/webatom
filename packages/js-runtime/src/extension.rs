@@ -1,15 +1,28 @@
-use std::any::Any;
+use std::{any::Any, time::Duration};
 use tokio_util::sync::CancellationToken;
 use rquickjs::Ctx;
 
-use crate::storage::RoomMemoryCenter;
+use crate::{event_loop::event_loop_impl::{EventSender, TaskType, spawn_event_port}, storage::RoomMemoryCenter};
 
 pub struct ExtensionContext<'a, 'js> {
     pub ctx: &'a Ctx<'js>,
+    pub async_context: &'a rquickjs::AsyncContext,
     pub cancel_token: CancellationToken,
 }
 
 impl<'a, 'js> ExtensionContext<'a, 'js> {
+
+    pub fn spawn_event_port<F>(
+        &self,
+        task_type: TaskType,
+        starvation_threshold: Duration,
+        rust_handler: F,
+    ) -> EventSender
+    where
+        F: FnMut( &dyn Any) + Send + 'static,
+    {
+        spawn_event_port(self.async_context, task_type, starvation_threshold, rust_handler)
+    }
     pub fn global_storage<R, F>(&self, f: F) -> R
     where
         F: FnOnce(&mut crate::storage::GlobalRoomStorage) -> R,

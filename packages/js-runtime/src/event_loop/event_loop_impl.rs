@@ -55,58 +55,8 @@ impl EventSender {
     }
 }
 
-// ──────────────────────────────────────────────────────────────
-// 2. 纯净度 100% 的 Ctx 扩展方法
-// ──────────────────────────────────────────────────────────────
-
-/// 为 [`rquickjs::Ctx`] 提供事件端口的扩展方法。
-///
-/// 每次调用会在当前 QuickJS 上下文内部启动一个独立的异步调度泵，
-/// 返回可跨线程复用的 [`EventSender`]。调用方只管 `send`，
-/// 优先级调度、饥饿保护、让权逻辑均由泵内部处理。
-pub trait EventPortExt {
-    /// 通用入口，完整控制 `task_type` 和 `starvation_threshold`。
-    ///
-    /// `starvation_threshold` 为零时 Idle 任务永不因超时被强制提升优先级，
-    /// 仅在 `skipped_count` 达到上限时才会被消费。
-    fn spawn_event_port<F>(
-        &self,
-        task_type: TaskType,
-        starvation_threshold: Duration,
-        rust_handler: F,
-    ) -> EventSender
-    where
-        F:  FnMut( &dyn Any) + Send + 'static;
-
-    /// AfterMicro port — starvation_threshold 默认 10ms，紧跟微任务检查点执行。
-    fn spawn_after_micro_port<F>(&self, rust_handler: F) -> EventSender
-    where
-        F:  FnMut( &dyn Any) + Send + 'static,
-    {
-        self.spawn_event_port(TaskType::AfterMicro, Duration::from_millis(10), rust_handler)
-    }
-
-    /// Macro port — starvation_threshold defaults to 16ms（一帧预算，对应 setTimeout 级别）
-    fn spawn_macro_port<F>(&self, rust_handler: F) -> EventSender
-    where
-        F:  FnMut( &dyn Any) + Send + 'static,
-    {
-        self.spawn_event_port(TaskType::Macro, Duration::from_millis(16), rust_handler)
-    }
-
-    /// Idle port — starvation_threshold defaults to 50ms（空闲回调典型预算）
-    fn spawn_idle_port<F>(&self, rust_handler: F, starvation_threshold: Duration) -> EventSender
-    where
-        F:  FnMut( &dyn Any) + Send + 'static,
-    {
-        self.spawn_event_port(TaskType::Idle, starvation_threshold, rust_handler)
-    }
-}
-
-impl EventPortExt for AsyncContext {
-    /// starvation_threshold 如果取值为零 永远没有超时时间
-    fn spawn_event_port<F>(
-        &self,
+pub fn spawn_event_port<F>(
+        async_context: &AsyncContext,
         task_type: TaskType,
         starvation_threshold: Duration,
         mut rust_handler: F,
@@ -118,7 +68,7 @@ impl EventPortExt for AsyncContext {
         let (idle_tx, mut idle_rx) = mpsc::channel::<EventEnvelope>(128);
 
         // 通过 self 无锁无依赖直接拿到房间底座
-        let async_ctx = self.clone();
+        let async_ctx = async_context.clone();
 
         tokio::task::spawn_local(async move {
             let mut handler = rust_handler;
@@ -186,8 +136,6 @@ impl EventPortExt for AsyncContext {
 
         EventSender { macro_tx, idle_tx, task_type }
     }
-}
-
 // ──────────────────────────────────────────────────────────────
 // 3. 终极双保险大闸：PureEventLoop
 // ──────────────────────────────────────────────────────────────

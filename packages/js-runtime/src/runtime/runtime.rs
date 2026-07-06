@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use rquickjs::{AsyncContext, AsyncRuntime, Module};
+use rquickjs::{AsyncContext, AsyncRuntime, Module, FromJs};
 
 use crate::storage::{GlobalRoomStorage, RoomMemoryCenter};
 use crate::extension::{ExtensionContext, ExtensionSet};
@@ -36,6 +36,7 @@ impl JsContext {
             for ext in extensions.iter() {
                 let ext_ctx = ExtensionContext {
                     ctx: &ctx,
+                    async_context: &inner_ctx,
                     cancel_token: room_cancel_token.clone(),
                 };
                 ext.install(&ext_ctx)?;
@@ -61,18 +62,18 @@ impl JsContext {
     // ⚔️ 终极唯一高层执行接口：一刀切的万能 eval 大闸
     // ──────────────────────────────────────────────────────────────
 
-    // 🔥 就地异步执行一段 JS 代码，并全自动将其返回值转换为 Rust 强类型
-    // 泛型 R 表示预期的 Rust 返回类型（如 String, i32, bool, 或自定义结构体）
-    // pub async fn eval<R, S>(&self, source: S) -> rquickjs::Result<R>
-    // where
-    //     R: for<'js> From<'js> + 'static,
-    //     S: AsRef<str> + Send + 'static,
-    // {
-    //     // 引擎在幕后全自动剥离 rquickjs 复杂的 with 异步闭包和借用生存期检查
-    //     self.inner_ctx.with(|ctx| {
-    //         ctx.eval::<R, _>(source)
-    //     }).await
-    // }
+    /// 🔥 就地异步执行一段 JS 代码，并全自动将其返回值转换为 Rust 强类型
+    /// 泛型 R 表示预期的 Rust 返回类型（如 String, i32, bool, 或自定义结构体）
+    pub async fn eval<R, S>(&self, source: S) -> rquickjs::Result<R>
+    where
+        R: for<'js> FromJs<'js> + 'static,
+        S: Into<Vec<u8>> + Send + 'static,
+    {
+        // 引擎在幕后全自动剥离 rquickjs 复杂的 with 异步闭包和借用生存期检查
+        self.inner_ctx.with(|ctx| {
+            ctx.eval::<R, _>(source)
+        }).await
+    }
 
 
     // ──────────────────────────────────────────────────────────────
@@ -82,36 +83,33 @@ impl JsContext {
     // 🔥 异步运行一个标准的 ES 模块，并全自动冲刷内部可能存在的 Top-level await 异步拓扑树
     // `module_name`: 给模块起个虚拟路径名（例如 "foo.js" 或 "app/index.js"）
     // `source`: 模块的货真价实的纯文本源代码（包含 import / export）
-    // pub async fn eval_module<S>(&self, module_name: S, source: S) -> rquickjs::Result<()>
-    // where
-    //     S: AsRef<str> + Send + 'static,
-    // {
-    //     let name_str = module_name.as_ref().to_string();
-    //     let source_str = source.as_ref().to_string();
+    pub async fn eval_module<S>(&self, module_name: S, source: S) -> rquickjs::Result<()>
+    where
+        S: AsRef<str> + Send + 'static,
+    {
+        let name_str = module_name.as_ref().to_string();
+        let source_str = source.as_ref().to_string();
 
-    //     self.inner_ctx.with(|ctx| {
-    //         // 阶段 1：在当前房间中宣告并注册该 ES 模块
-    //         let (module, promise) = Module::declare(
-    //             ctx.clone(),
-    //             name_str,
-    //             source_str,
-    //         )?;
+        self.inner_ctx.with(|ctx| {
+            // 🎯 修复核心 1：Module::declare 吐出的是纯粹的 Module 实体，不是元组！
+            // 这里我们传入 ctx 的引用即可，不需要显式 ctx.clone() 从而避免引用计数无谓开销
+            let module = rquickjs::Module::declare(
+                ctx,
+                name_str,
+                source_str,
+            )?;
 
-    //         // 阶段 2：对模块进行编译并就地求值（Evaluation）
-    //         // 此时如果模块内部有语法错误，会直接在这里爆破抛出
-    //         let _ = module.eval()?;
+            // 🎯 修复核心 2：在最新异步架构中，eval() 或者是 evaluate() 才会返回一个
+            // 标志着该模块是否加载、执行完毕的 Promise 或者是特定状态标识。
+            // 我们直接将其就地求值：
+            let _eval_result = module.eval()?;
 
-    //         // 阶段 3：终极杀招！冲刷并驱动由于 Top-level await 引发的内部 Promise 链条
-    //         // 这是 Deno / Node.js 底层最核心的打通逻辑
-    //         while ctx.process_pending_promises() {
-    //             // 疯狂空转冲刷，直到所有挂起的模块异步任务全部落地
-    //         }
 
-    //         Ok::<(), rquickjs::Error>(())
-    //     }).await?;
+            Ok::<(), rquickjs::Error>(())
+        }).await?;
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 }
 
 // ──────────────────────────────────────────────────────────────
