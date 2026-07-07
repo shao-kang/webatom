@@ -1,194 +1,274 @@
 use std::any::Any;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken; // 引入标准的 Tokio 取消令牌
-use rquickjs::{AsyncContext, AsyncRuntime, Ctx};
+use tokio_util::sync::CancellationToken;
+use rquickjs::AsyncRuntime;
 
 // ──────────────────────────────────────────────────────────────
-// 1. 极致精简的任务分级与信封
+// 任务优先级分级
 // ──────────────────────────────────────────────────────────────
 
-/// 任务的调度优先级分级。
+/// 任务的调度优先级。
 ///
-/// 调度顺序：AfterMicro > Macro > Idle。
-/// 同一 port 内部以此枚举控制 yield 行为和饥饿保护策略。
+/// 消费顺序：AfterMicro → Macro → Idle。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskType {
-    /// 微任务检查点之后立即执行，不主动 yield，对应 `queueMicrotask` 后紧跟的回调。
+    /// 微任务检查点后立即执行，对应 `queueMicrotask` 后紧跟的回调。
     AfterMicro,
-    /// 宏任务级别，执行前 yield 一次让出控制权，对应 `setTimeout` / `setInterval`。
+    /// 宏任务级别，对应 `setTimeout` / `setInterval`。
     Macro,
     /// 空闲任务，仅在高优队列为空时消费，对应 `requestIdleCallback`。
     Idle,
 }
 
+// ──────────────────────────────────────────────────────────────
+// 事件信封与发送端
+// ──────────────────────────────────────────────────────────────
+
+pub type HandlerId = u32;
+
 /// 跨线程传递的事件信封。
 ///
-/// `created_at` 记录入队时刻，用于饥饿检测：当 Idle 任务等待时长超过
-/// `starvation_threshold` 时，调度器会强制绕过高优队列直接消费它。
+/// 只携带 payload 和 handler_id；handler 本体留在 EventLoop 线程，
+/// 因此 handler 可持有 `Rc`、`RefCell` 等 `!Send` 数据。
 pub struct EventEnvelope {
     pub created_at: Instant,
+    pub handler_id: HandlerId,
     pub payload: Box<dyn Any + Send>,
+}
+
+// EventSender 的实际数据，Arc 包裹，最后一个 clone drop 时自动通知 EventLoop 清理 handler。
+struct EventSenderInner {
+    tx: mpsc::Sender<EventEnvelope>,
+    handler_id: HandlerId,
+    cleanup_tx: mpsc::UnboundedSender<HandlerId>,
+}
+
+impl Drop for EventSenderInner {
+    fn drop(&mut self) {
+        let _ = self.cleanup_tx.send(self.handler_id);
+    }
 }
 
 /// 轻量的跨线程事件发射端，可自由 Clone 后在任意线程调用 [`EventSender::send`]。
 ///
-/// 内部持有两条独立通道：`macro_tx`（高优）和 `idle_tx`（低优），
-/// 发送时根据构造时绑定的 `task_type` 自动路由，调用方无需感知通道细节。
+/// 所有 clone 全部 drop 后，对应的 handler 会从 EventLoop 中自动移除。
 #[derive(Clone)]
 pub struct EventSender {
-    macro_tx: mpsc::Sender<EventEnvelope>,
-    idle_tx: mpsc::Sender<EventEnvelope>,
-    task_type: TaskType,
+    inner: Arc<EventSenderInner>,
 }
 
 impl EventSender {
     pub fn send(&self, payload: impl Any + Send) {
-        let envelope = EventEnvelope {
+        let _ = self.inner.tx.try_send(EventEnvelope {
             created_at: Instant::now(),
+            handler_id: self.inner.handler_id,
             payload: Box::new(payload),
-        };
-        match self.task_type {
-            TaskType::Idle => { let _ = self.idle_tx.try_send(envelope); }
-            TaskType::Macro | TaskType::AfterMicro => { let _ = self.macro_tx.try_send(envelope); }
-        }
+        });
     }
 }
 
-pub fn spawn_event_port<F>(
-        async_context: &AsyncContext,
-        task_type: TaskType,
-        starvation_threshold: Duration,
-        mut rust_handler: F,
-    ) -> EventSender
-    where
-        F: FnMut( &dyn Any) + Send + 'static,
-    {
-        let (macro_tx, mut macro_rx) = mpsc::channel::<EventEnvelope>(128);
-        let (idle_tx, mut idle_rx) = mpsc::channel::<EventEnvelope>(128);
-
-        // 通过 self 无锁无依赖直接拿到房间底座
-        let async_ctx = async_context.clone();
-
-        tokio::task::spawn_local(async move {
-            let mut handler = rust_handler;
-            let mut skipped_count = 0;
-            const MAX_SKIPPED_LIMIT: u32 = 100;
-
-            loop {
-                let mut active_envelope: Option<EventEnvelope> = None;
-                let mut force_idle_green_light = false;
-
-                // 盲摸低优，反饿死长矛
-                if let Ok(peek_envelope) = idle_rx.try_recv() {
-                    if (peek_envelope.created_at.elapsed() >= starvation_threshold && starvation_threshold > Duration::ZERO)|| skipped_count >= MAX_SKIPPED_LIMIT {
-                        force_idle_green_light = true;
-                        active_envelope = Some(peek_envelope);
-                        skipped_count = 0;
-                    } else {
-                        active_envelope = Some(peek_envelope);
-                    }
-                }
-
-                if !force_idle_green_light {
-                    if active_envelope.is_none() {
-                        tokio::select! {
-                            biased;
-                            Some(envelope) = macro_rx.recv() => {
-                                active_envelope = Some(envelope);
-                                skipped_count += 1;
-                            }
-                            Some(envelope) = idle_rx.recv() => {
-                                active_envelope = Some(envelope);
-                                skipped_count = 0;
-                            }
-                            else => {
-                                // 🌟 外部 Sender 全部被 Drop 时，管道全断开，局部泵优雅自杀
-                                break;
-                            }
-                        }
-                    } else if let Ok(macro_env) = macro_rx.try_recv() {
-                        active_envelope = Some(macro_env);
-                        skipped_count += 1;
-                    }
-
-                    // 优先级控制与让权
-                    if let Some(ref env) = active_envelope {
-                        match task_type {
-                            TaskType::AfterMicro => {}
-                            TaskType::Macro | TaskType::Idle => {
-                                if env.created_at.elapsed() < starvation_threshold {
-                                    tokio::task::yield_now().await;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 落地消费，动态由底层唤醒并传出精准房间的 qctx
-                if let Some(envelope) = active_envelope {
-                    async_ctx.with(|qctx| {
-                        handler( envelope.payload.as_ref());
-                    }).await;
-                }
-            }
-        });
-
-        EventSender { macro_tx, idle_tx, task_type }
-    }
 // ──────────────────────────────────────────────────────────────
-// 3. 终极双保险大闸：PureEventLoop
+// EventLoop
 // ──────────────────────────────────────────────────────────────
 
 /// 驱动 QuickJS 运行时的主事件循环。
 ///
-/// 采用双保险退出策略：
+/// 持有三条按优先级分级的 channel，统一消费所有插件推送的事件，
+/// 保证跨插件的调度顺序：AfterMicro → Macro → Idle。
+///
+/// 退出策略：
 /// - 主动退出：`cancel_token` 被取消时立即中止；
-/// - 自然退出：`runtime.idle()` 返回 `false`（JS 侧无任何挂起任务）时自动收网。
+/// - 自然退出：`runtime.idle()` 返回时（JS 侧无任何挂起任务）自动收网。
 pub struct EventLoop {
     runtime: AsyncRuntime,
-    /// 宿主可随时通过此令牌强制中止循环，优先级高于 JS 侧的自然空闲检测。
     cancel_token: CancellationToken,
+
+    after_micro_rx: mpsc::Receiver<EventEnvelope>,
+    macro_rx: mpsc::Receiver<EventEnvelope>,
+    idle_rx: mpsc::Receiver<EventEnvelope>,
+
+    after_micro_tx: mpsc::Sender<EventEnvelope>,
+    macro_tx: mpsc::Sender<EventEnvelope>,
+    idle_tx: mpsc::Sender<EventEnvelope>,
+
+    // handler 永远在 EventLoop 线程消费，无需 Send 约束
+    handlers: HashMap<HandlerId, Box<dyn FnMut(&dyn Any)>>,
+    next_id: HandlerId,
+
+    cleanup_tx: mpsc::UnboundedSender<HandlerId>,
+    cleanup_rx: mpsc::UnboundedReceiver<HandlerId>,
+
+    // 饥饿保护：Idle 连续被跳过超过此次数，强制优先执行
+    idle_skipped_count: u32,
+    // 事件在队列中等待时间小于此阈值时，Macro 任务执行前先 yield 让权
+    starvation_threshold: Duration,
 }
 
 impl EventLoop {
-    pub fn new(runtime: AsyncRuntime, cancel_token: CancellationToken) -> Self {
-        Self { runtime, cancel_token }
+    pub fn new(runtime: AsyncRuntime, cancel_token: CancellationToken, starvation_threshold: Duration) -> Self {
+        let (after_micro_tx, after_micro_rx) = mpsc::channel(128);
+        let (macro_tx, macro_rx) = mpsc::channel(128);
+        let (idle_tx, idle_rx) = mpsc::channel(128);
+        let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
+        Self {
+            runtime,
+            cancel_token,
+            after_micro_rx,
+            macro_rx,
+            idle_rx,
+            after_micro_tx,
+            macro_tx,
+            idle_tx,
+            handlers: HashMap::new(),
+            next_id: 0,
+            cleanup_tx,
+            cleanup_rx,
+            idle_skipped_count: 0,
+            starvation_threshold,
+        }
     }
 
-    /// 阻塞运行事件循环直至退出条件触发，退出后刷完最后一批 pending job。
+    /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventSender`]。
+    ///
+    /// `handler` 不要求 `Send`，可持有 `Rc`、`RefCell` 等单线程数据。
+    /// 所有 [`EventSender`] clone 全部 drop 后，handler 自动从注册表移除。
+    pub fn register_event_port<F>(&mut self, task_type: TaskType, handler: F) -> EventSender
+    where
+        F: FnMut(&dyn Any) + 'static,
+    {
+        let id = loop {
+            let candidate = self.next_id;
+            self.next_id = self.next_id.checked_add(1).expect("HandlerId exhausted");
+            if let Entry::Vacant(e) = self.handlers.entry(candidate) {
+                e.insert(Box::new(handler));
+                break candidate;
+            }
+        };
+
+        let tx = match task_type {
+            TaskType::AfterMicro => self.after_micro_tx.clone(),
+            TaskType::Macro      => self.macro_tx.clone(),
+            TaskType::Idle       => self.idle_tx.clone(),
+        };
+        EventSender {
+            inner: Arc::new(EventSenderInner {
+                tx,
+                handler_id: id,
+                cleanup_tx: self.cleanup_tx.clone(),
+            }),
+        }
+    }
+
+    /// 阻塞运行事件循环直至退出条件触发。
     pub async fn run(&mut self) -> rquickjs::Result<()> {
         loop {
-            // 防线 1：随时检查宿主是否拉响了强制退出的警报
             if self.cancel_token.is_cancelled() {
-                println!("🛑 [EventLoop] 收到 CancellationToken 强行中止信号，大循环紧急收网退出！");
                 break;
             }
 
-            tokio::select! {
-                biased; // 强偏向模式
+            // 清理已全部 drop 的 sender 对应的 handler
+            while let Ok(id) = self.cleanup_rx.try_recv() {
+                self.handlers.remove(&id);
+            }
 
-                // 防线 2：绝对优先倾听取消令牌的异步通知
-                _ = self.cancel_token.cancelled() => {
-                    continue; // 重新进循环，会在大循环顶部直接 break
-                }
-                _ = self.runtime.drive() => {
+            // ── 1. AfterMicro：全部 drain ────────────────────────────────
+            while let Ok(env) = self.after_micro_rx.try_recv() {
+                Self::dispatch(&mut self.handlers, env);
+            }
+
+            // ── 2. Macro（Idle 未饥饿时优先）────────────────────────────
+            const MAX_IDLE_SKIPS: u32 = 100;
+            let idle_starved = self.idle_skipped_count >= MAX_IDLE_SKIPS;
+
+            if !idle_starved {
+                if let Ok(env) = self.macro_rx.try_recv() {
+                    if self.starvation_threshold > Duration::ZERO
+                        && env.created_at.elapsed() < self.starvation_threshold
+                    {
+                        tokio::task::yield_now().await;
+                    }
+                    Self::dispatch(&mut self.handlers, env);
+                    self.idle_skipped_count += 1;
                     continue;
-                }
-                
-                // 防线 3：JS 引擎底层的驱动核心。
-                // runtime.idle() 具有决定生死的返回值：
-                // 当它返回 Ok(false) 或者错误时，明确意味着：
-                // “当前 Runtime 下所有房间里所有的脚本执行完了，没有任何挂起的定时器、没有挂起的 Promise，彻底没事干了”
-                _idle_result = self.runtime.idle() => {
-
-                      // 🎯 核心绝杀：JS 侧全空闲，且没有任何待处理任务，完美的自动全寿终正寝！
-                    println!("🏁 [EventLoop] JS 侧所有任务、定时器、Promise 已全数执行完毕且环境空闲。完美全自动收网退出！");
-                    break;
                 }
             }
 
+            // ── 3. Idle：高优全空，或饥饿保护触发 ───────────────────────
+            if let Ok(env) = self.idle_rx.try_recv() {
+                Self::dispatch(&mut self.handlers, env);
+                self.idle_skipped_count = 0;
+                continue;
+            }
+
+            // 饥饿保护触发但无 Idle 任务，回落执行 Macro
+            if idle_starved {
+                if let Ok(env) = self.macro_rx.try_recv() {
+                    if self.starvation_threshold > Duration::ZERO
+                        && env.created_at.elapsed() < self.starvation_threshold
+                    {
+                        tokio::task::yield_now().await;
+                    }
+                    Self::dispatch(&mut self.handlers, env);
+                    self.idle_skipped_count = 0;
+                    continue;
+                }
+            }
+
+            // ── 4. 全空，等待任意 channel 有数据或退出信号 ────────────────
+            tokio::select! {
+                biased;
+                _ = self.cancel_token.cancelled() => break,
+                _ = self.runtime.drive() => {},
+                _ = self.runtime.idle() => {
+                    println!("🏁 [EventLoop] JS 侧所有任务执行完毕，自动退出。");
+                    break;
+                }
+                Some(_) = self.after_micro_rx.recv() => {},
+                Some(_) = self.macro_rx.recv() => {},
+                Some(_) = self.idle_rx.recv() => {},
+            }
         }
         Ok(())
+    }
+
+    fn dispatch(
+        handlers: &mut HashMap<HandlerId, Box<dyn FnMut(&dyn Any)>>,
+        env: EventEnvelope,
+    ) {
+        if let Some(handler) = handlers.get_mut(&env.handler_id) {
+            handler(env.payload.as_ref());
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// EventPortRegistrar
+// ──────────────────────────────────────────────────────────────
+
+/// 事件端口注册代理，在 Extension::setup_context 中使用。
+///
+/// 只暴露注册能力，Extension 无需感知完整的 [`EventLoop`] 接口。
+pub struct EventPortRegistrar<'a> {
+    event_loop: &'a mut EventLoop,
+}
+
+impl<'a> EventPortRegistrar<'a> {
+    pub fn new(event_loop: &'a mut EventLoop) -> Self {
+        Self { event_loop }
+    }
+
+    /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventSender`]。
+    ///
+    /// `handler` 不要求 `Send`，可持有 `Rc`、`RefCell` 等单线程数据。
+    /// 所有 [`EventSender`] clone 全部 drop 后，handler 自动从注册表移除。
+    pub fn register_event_port<F>(&mut self, task_type: TaskType, handler: F) -> EventSender
+    where
+        F: FnMut(&dyn Any) + 'static,
+    {
+        self.event_loop.register_event_port(task_type, handler)
     }
 }
