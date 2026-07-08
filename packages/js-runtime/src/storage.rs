@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 pub struct GlobalRoomStorage {
     pub cancel_token: CancellationToken,
+    #[allow(dead_code)]
     pub share_map: HashMap<String, Box<dyn Any + Send + Sync>>,
 }
 

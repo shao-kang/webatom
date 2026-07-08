@@ -1,4 +1,3 @@
-use strum::IntoEnumIterator; // 1. 引入扩展 Trait
 use strum::EnumIter;  // 2. 引入派生宏
 // ──────────────────────────────────────────────────────────────
 // event types
@@ -18,19 +17,7 @@ pub enum EventType{
     Idle,
 }
 
-impl EventType {
-    /// Number of event types; equals the number of enum variants.
-    pub const COUNT: usize = 4;
 
-    fn as_index(self) -> usize {
-        match self {
-            EventType::AfterMicro => 0,
-            EventType::Raf => 1,
-            EventType::Macro => 2,
-            EventType::Idle => 3,
-        }
-    }
-}
 
 // ──────────────────────────────────────────────────────────────
 // Handler trait

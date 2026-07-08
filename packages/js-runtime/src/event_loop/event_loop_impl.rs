@@ -109,7 +109,7 @@ pub struct EventLoop {
 }
 
 impl EventLoop {
-    pub fn new(runtime: AsyncRuntime, cancel_token: CancellationToken, starvation_threshold: Duration) -> Self {
+    pub fn new(runtime: AsyncRuntime, cancel_token: CancellationToken) -> Self {
         let (after_micro_tx, after_micro_rx) = mpsc::channel(128);
         let (macro_tx, macro_rx) = mpsc::channel(128);
         let (idle_tx, idle_rx) = mpsc::channel(128);
@@ -128,7 +128,7 @@ impl EventLoop {
             cleanup_tx,
             cleanup_rx,
             idle_skipped_count: 0,
-            starvation_threshold,
+            starvation_threshold: Duration::from_millis(5),
         }
     }
 
