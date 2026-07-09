@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use rquickjs::{Context, Runtime, FromJs};
@@ -12,7 +14,8 @@ use super::JsRuntimeBuilder;
 
 pub struct JsRuntime {
     context: Context,
-    event_loop: EventLoop,
+    event_port_registrar: EventPortRegistrar,
+    event_loop: Rc<RefCell<EventLoop>>,
     cancel_token: CancellationToken,
 }
 
@@ -24,8 +27,9 @@ impl JsRuntime {
         let runtime = Runtime::new()?;
         let extensions = topological_sort(extensions);
 
-        let mut event_loop = EventLoop::new(runtime.clone(), cancel_token.clone());
-
+        let event_loop = EventLoop::new(runtime.clone(), cancel_token.clone());
+        let event_loop_rc = Rc::new(RefCell::new(event_loop));
+        let event_port_registrar = EventPortRegistrar::new(event_loop_rc.clone());
         let ctx = Context::full(&runtime)?;
 
         ctx.with(|js_ctx| {
@@ -38,10 +42,9 @@ impl JsRuntime {
 
         for ext in &extensions {
             let mut env = ExtensionEnv::new(
-                &runtime,
                 &ctx,
                 cancel_token.clone(),
-                EventPortRegistrar::new(&mut event_loop),
+                event_port_registrar.clone(),
                 ext.name(),
             );
             ext.setup(&mut env);
@@ -58,7 +61,7 @@ impl JsRuntime {
             Ok::<(), rquickjs::Error>(())
         })?;
 
-        Ok(Self { context: ctx, event_loop, cancel_token })
+        Ok(Self { context: ctx, event_loop: event_loop_rc,  event_port_registrar, cancel_token })
     }
 
     pub fn builder() -> JsRuntimeBuilder {
@@ -90,8 +93,8 @@ impl JsRuntime {
         })
     }
 
-    pub async fn run(mut self) -> rquickjs::Result<()> {
-        self.event_loop.run().await
+    pub async fn run(self) -> rquickjs::Result<()> {
+        self.event_loop.borrow_mut().run().await
     }
 }
 

@@ -1,6 +1,8 @@
 use std::any::Any;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -270,6 +272,7 @@ impl EventLoop {
             handler(env.payload.as_ref());
         }
     }
+    
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -279,12 +282,13 @@ impl EventLoop {
 /// 事件端口注册代理，在 Extension::setup 中使用。
 ///
 /// 只暴露注册能力，Extension 无需感知完整的 [`EventLoop`] 接口。
-pub struct EventPortRegistrar<'a> {
-    event_loop: &'a mut EventLoop,
+#[derive(Clone)]
+pub struct EventPortRegistrar {
+    event_loop:Rc<RefCell<EventLoop>>,
 }
 
-impl<'a> EventPortRegistrar<'a> {
-    pub fn new(event_loop: &'a mut EventLoop) -> Self {
+impl EventPortRegistrar {
+    pub fn new(event_loop: Rc<RefCell<EventLoop>>) -> Self {
         Self { event_loop }
     }
 
@@ -292,6 +296,8 @@ impl<'a> EventPortRegistrar<'a> {
     where
         F: FnMut(&dyn Any) + 'static,
     {
-        self.event_loop.register_event_port(task_type, handler)
+        // 运行时借用检查，获取可变引用
+        self.event_loop.borrow_mut().register_event_port(task_type, handler)
+
     }
 }

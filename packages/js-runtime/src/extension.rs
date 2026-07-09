@@ -1,5 +1,5 @@
 use std::any::Any;
-use rquickjs::{Runtime, Context, Ctx};
+use rquickjs::{ Context, Ctx};
 use tokio_util::sync::CancellationToken;
 
 use crate::event_loop::event_loop_impl::{EventPortRegistrar, EventSender, TaskType};
@@ -8,35 +8,30 @@ use crate::event_loop::event_loop_impl::{EventPortRegistrar, EventSender, TaskTy
 
 /// `setup` 的调用环境，每个 Extension 安装时独立创建。
 ///
-/// - `runtime`：引擎级配置（内存上限、GC 阈值、栈大小等）
-/// - `ctx`：通过 `ctx.with(|ctx| { ... })` 注入 JS 全局对象
+/// - `get_context()`：通过 `ctx.with(|ctx| { ... })` 注入 JS 全局对象
 /// - `cancel`：感知运行时生命周期的取消令牌
+/// - `register_event_port()`：注册事件端口
 pub struct ExtensionEnv<'a> {
-    runtime: &'a Runtime,
-    ctx: &'a Context,
+    context: &'a Context,
     pub cancel: CancellationToken,
-    ports: EventPortRegistrar<'a>,
+    ports: EventPortRegistrar,
     plugin_name: &'static str,
 }
 
 impl<'a> ExtensionEnv<'a> {
     pub fn new(
-        runtime: &'a Runtime,
-        ctx: &'a Context,
+        context: &'a Context,
         cancel: CancellationToken,
-        ports: EventPortRegistrar<'a>,
+        ports: EventPortRegistrar,
         plugin_name: &'static str,
     ) -> Self {
-        Self { runtime, ctx, cancel, ports, plugin_name }
+        Self { context, cancel, ports, plugin_name }
     }
 
     pub fn get_context(&self) -> &'a Context {
-        self.ctx
+        self.context
     }
 
-    pub fn get_runtime(&self) -> &'a Runtime {
-        self.runtime
-    }
 
     /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventSender`]。
     pub fn register_event_port<F>(&mut self, task_type: TaskType, handler: F) -> EventSender
