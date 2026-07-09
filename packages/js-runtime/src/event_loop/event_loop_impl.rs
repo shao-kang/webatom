@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use rquickjs::AsyncRuntime;
+use rquickjs::Runtime;
 
 // ──────────────────────────────────────────────────────────────
 // 任务优先级分级
@@ -82,9 +82,9 @@ impl EventSender {
 ///
 /// 退出策略：
 /// - 主动退出：`cancel_token` 被取消时立即中止；
-/// - 自然退出：`runtime.idle()` 返回时（JS 侧无任何挂起任务）自动收网。
+/// - 自然退出：所有 EventSender 全部 drop（handlers 为空）且无待处理事件时自动退出。
 pub struct EventLoop {
-    runtime: AsyncRuntime,
+    runtime: Runtime,
     cancel_token: CancellationToken,
 
     after_micro_rx: mpsc::Receiver<EventEnvelope>,
@@ -109,7 +109,7 @@ pub struct EventLoop {
 }
 
 impl EventLoop {
-    pub fn new(runtime: AsyncRuntime, cancel_token: CancellationToken) -> Self {
+    pub fn new(runtime: Runtime, cancel_token: CancellationToken) -> Self {
         let (after_micro_tx, after_micro_rx) = mpsc::channel(128);
         let (macro_tx, macro_rx) = mpsc::channel(128);
         let (idle_tx, idle_rx) = mpsc::channel(128);
@@ -163,7 +163,7 @@ impl EventLoop {
         }
     }
 
-    /// 阻塞运行事件循环直至退出条件触发。
+    /// 驱动事件循环直至退出条件触发。
     pub async fn run(&mut self) -> rquickjs::Result<()> {
         loop {
             if self.cancel_token.is_cancelled() {
@@ -175,9 +175,18 @@ impl EventLoop {
                 self.handlers.remove(&id);
             }
 
+            // ── drain JS microtask 队列（规范：先于宏任务）────────────────
+            self.drain_jobs();
+
             // ── 1. AfterMicro：全部 drain ────────────────────────────────
+            let mut after_micro_fired = false;
             while let Ok(env) = self.after_micro_rx.try_recv() {
                 Self::dispatch(&mut self.handlers, env);
+                after_micro_fired = true;
+            }
+            if after_micro_fired {
+                self.drain_jobs();
+                continue;
             }
 
             // ── 2. Macro（Idle 未饥饿时优先）────────────────────────────
@@ -193,6 +202,7 @@ impl EventLoop {
                     }
                     Self::dispatch(&mut self.handlers, env);
                     self.idle_skipped_count += 1;
+                    self.drain_jobs();
                     continue;
                 }
             }
@@ -201,6 +211,7 @@ impl EventLoop {
             if let Ok(env) = self.idle_rx.try_recv() {
                 Self::dispatch(&mut self.handlers, env);
                 self.idle_skipped_count = 0;
+                self.drain_jobs();
                 continue;
             }
 
@@ -214,25 +225,41 @@ impl EventLoop {
                     }
                     Self::dispatch(&mut self.handlers, env);
                     self.idle_skipped_count = 0;
+                    self.drain_jobs();
                     continue;
                 }
             }
 
-            // ── 4. 全空，等待任意 channel 有数据或退出信号 ────────────────
+            // ── 4. 全空：检查自然退出 ────────────────────────────────────
+            // handlers 为空意味着所有 EventSender 已 drop，不会再有新事件
+            if self.handlers.is_empty() {
+                println!("🏁 [EventLoop] 所有任务完成，自动退出。");
+                break;
+            }
+
+            // ── 5. 等待任意 channel 有数据或退出信号 ─────────────────────
             tokio::select! {
                 biased;
                 _ = self.cancel_token.cancelled() => break,
-                _ = self.runtime.drive() => {},
-                _ = self.runtime.idle() => {
-                    println!("🏁 [EventLoop] JS 侧所有任务执行完毕，自动退出。");
-                    break;
-                }
                 Some(_) = self.after_micro_rx.recv() => {},
                 Some(_) = self.macro_rx.recv() => {},
                 Some(_) = self.idle_rx.recv() => {},
             }
         }
         Ok(())
+    }
+
+    /// 循环执行所有待处理的 JS jobs（microtask checkpoint）。
+    ///
+    /// Job 抛出异常时记录日志并继续，不崩溃事件循环（对应浏览器的 unhandledrejection 行为）。
+    fn drain_jobs(&self) {
+        loop {
+            match self.runtime.execute_pending_job() {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(e) => eprintln!("[EventLoop] unhandled JS job exception: {:?}", e),
+            }
+        }
     }
 
     fn dispatch(
@@ -249,7 +276,7 @@ impl EventLoop {
 // EventPortRegistrar
 // ──────────────────────────────────────────────────────────────
 
-/// 事件端口注册代理，在 Extension::setup_context 中使用。
+/// 事件端口注册代理，在 Extension::setup 中使用。
 ///
 /// 只暴露注册能力，Extension 无需感知完整的 [`EventLoop`] 接口。
 pub struct EventPortRegistrar<'a> {
@@ -261,10 +288,6 @@ impl<'a> EventPortRegistrar<'a> {
         Self { event_loop }
     }
 
-    /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventSender`]。
-    ///
-    /// `handler` 不要求 `Send`，可持有 `Rc`、`RefCell` 等单线程数据。
-    /// 所有 [`EventSender`] clone 全部 drop 后，handler 自动从注册表移除。
     pub fn register_event_port<F>(&mut self, task_type: TaskType, handler: F) -> EventSender
     where
         F: FnMut(&dyn Any) + 'static,

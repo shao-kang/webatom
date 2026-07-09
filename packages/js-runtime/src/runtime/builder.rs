@@ -37,10 +37,8 @@ impl JsRuntimeBuilder {
         self
     }
 
-   
-
-    pub async fn build(self) -> rquickjs::Result<JsRuntime> {
+    pub fn build(self) -> rquickjs::Result<JsRuntime> {
         let cancel_token = self.cancel_token.unwrap_or_else(CancellationToken::new);
-        JsRuntime::assemble(self.extensions, cancel_token).await
+        JsRuntime::assemble(self.extensions, cancel_token)
     }
 }

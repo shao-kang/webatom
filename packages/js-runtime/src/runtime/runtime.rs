@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use rquickjs::{AsyncContext, AsyncRuntime, FromJs};
+use rquickjs::{Context, Runtime, FromJs};
 
 use crate::storage::{GlobalRoomStorage, RoomMemoryCenter};
 use crate::extension::{ExtensionEnv, ExtensionSet, Extension};
@@ -11,35 +11,31 @@ use crate::event_loop::event_loop_impl::EventPortRegistrar;
 use super::JsRuntimeBuilder;
 
 pub struct JsRuntime {
-    context: AsyncContext,
+    context: Context,
     event_loop: EventLoop,
     cancel_token: CancellationToken,
 }
 
 impl JsRuntime {
-    pub(crate) async fn assemble(
+    pub(crate) fn assemble(
         extensions: ExtensionSet,
         cancel_token: CancellationToken,
     ) -> rquickjs::Result<Self> {
-        let runtime = AsyncRuntime::new()?;
+        let runtime = Runtime::new()?;
         let extensions = topological_sort(extensions);
 
-        // ── 事件循环 ─────────────────────────────────────────────
         let mut event_loop = EventLoop::new(runtime.clone(), cancel_token.clone());
 
-        // ── 创建 AsyncContext ────────────────────────────────────
-        let ctx = AsyncContext::full(&runtime).await?;
+        let ctx = Context::full(&runtime)?;
 
-        // 初始化 Context 级公共 userdata
         ctx.with(|js_ctx| {
             js_ctx.store_userdata(RoomMemoryCenter {
                 global: Mutex::new(GlobalRoomStorage::new(cancel_token.clone())),
                 private_manifest: Mutex::new(HashMap::new()),
             })?;
             Ok::<(), rquickjs::Error>(())
-        }).await?;
+        })?;
 
-        // ── 第二层：Extension context setup（异步）───────────────
         for ext in &extensions {
             let mut env = ExtensionEnv::new(
                 &runtime,
@@ -48,10 +44,9 @@ impl JsRuntime {
                 EventPortRegistrar::new(&mut event_loop),
                 ext.name(),
             );
-            ext.setup(&mut env).await;
+            ext.setup(&mut env);
         }
 
-        // ── 第三层：JS 胶水模块（惰性注入）──────────────────────
         ctx.with(|js_ctx| {
             for ext in &extensions {
                 for specifier in ext.module_specifiers() {
@@ -61,7 +56,7 @@ impl JsRuntime {
                 }
             }
             Ok::<(), rquickjs::Error>(())
-        }).await?;
+        })?;
 
         Ok(Self { context: ctx, event_loop, cancel_token })
     }
@@ -74,26 +69,25 @@ impl JsRuntime {
         self.cancel_token.clone()
     }
 
-    pub async fn eval<R, S>(&self, source: S) -> rquickjs::Result<R>
+    pub fn eval<R, S>(&self, source: S) -> rquickjs::Result<R>
     where
         R: for<'js> FromJs<'js> + 'static,
-        S: Into<Vec<u8>> + Send + 'static,
+        S: Into<Vec<u8>>,
     {
-        self.context.with(|ctx| ctx.eval::<R, _>(source)).await
+        self.context.with(|ctx| ctx.eval::<R, _>(source))
     }
 
-    pub async fn eval_module<S>(&self, module_name: S, source: S) -> rquickjs::Result<()>
+    pub fn eval_module<S>(&self, module_name: S, source: S) -> rquickjs::Result<()>
     where
-        S: AsRef<str> + Send + 'static,
+        S: AsRef<str>,
     {
         let name = module_name.as_ref().to_string();
         let src = source.as_ref().to_string();
         self.context.with(|ctx| {
             let module = rquickjs::Module::declare(ctx, name, src)?;
             let _ = module.eval()?;
-            Ok::<(), rquickjs::Error>(())
-        }).await?;
-        Ok(())
+            Ok(())
+        })
     }
 
     pub async fn run(mut self) -> rquickjs::Result<()> {

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use js_runtime::JsRuntime;
+use js_runtime::{JsRuntime, web::ConsoleExtension};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -19,12 +19,13 @@ async fn main() {
         .unwrap_or_else(|e| panic!("cannot read {}: {}", abs_path_str, e));
 
     let runtime = JsRuntime::builder()
-        // .with_extension(ConsoleExtension::new())
-        .build().await.unwrap();
+        .with_extension(ConsoleExtension{})
+        .build().unwrap();
+    let () = runtime.eval("console.log('hello world');").unwrap();
 
-    let num: i32 = runtime.eval("1+1").await.unwrap();
+    let num: i32 = runtime.eval("1+1").unwrap();
     println!("{}", num);
 
-    // runtime.eval_module(&abs_path_str, source).await.unwrap();
+    // runtime.eval_module(&abs_path_str, source).unwrap();
     runtime.run().await.unwrap();
 }
