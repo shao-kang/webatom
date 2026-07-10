@@ -14,7 +14,6 @@ use super::JsRuntimeBuilder;
 
 pub struct JsRuntime {
     context: Context,
-    event_port_registrar: EventPortRegistrar,
     event_loop: Rc<RefCell<EventLoop>>,
     cancel_token: CancellationToken,
 }
@@ -46,22 +45,29 @@ impl JsRuntime {
                 cancel_token.clone(),
                 event_port_registrar.clone(),
                 ext.name(),
+                ext.native_module_specifiers(),
             );
-            ext.setup(&mut env);
+            ext.native_setup(&mut env);
         }
 
         ctx.with(|js_ctx| {
             for ext in &extensions {
-                for specifier in ext.module_specifiers() {
-                    if let Some(source) = ext.js_source(specifier) {
-                        js_ctx.eval::<(), _>(source)?;
-                    }
+                // 用户可 import 的 JS 模块
+                for (specifier, source) in ext.js_modules() {
+                    let module = rquickjs::Module::declare(js_ctx.clone(), *specifier, *source)?;
+                    module.eval()?;
+                }
+                // globalThis 绑定（以 ESM 执行，可 import 原生模块）
+                if let Some(source) = ext.global_js() {
+                    let boot_name = format!("@{}-globals", ext.name());
+                    let module = rquickjs::Module::declare(js_ctx.clone(), boot_name, source)?;
+                    module.eval()?;
                 }
             }
             Ok::<(), rquickjs::Error>(())
         })?;
 
-        Ok(Self { context: ctx, event_loop: event_loop_rc,  event_port_registrar, cancel_token })
+        Ok(Self { context: ctx, event_loop: event_loop_rc, cancel_token })
     }
 
     pub fn builder() -> JsRuntimeBuilder {

@@ -1,4 +1,4 @@
-use rquickjs::{Ctx, Function, Object, Result, module::{Declarations, Exports, ModuleDef}};
+use rquickjs::{Ctx, Function, Result, module::{Declarations, Exports, ModuleDef}};
 
 use crate::extension::{Extension, ExtensionEnv};
 use crate::log_targets as target;
@@ -73,22 +73,25 @@ impl Extension for ConsoleExtension {
         "console"
     }
 
-    fn setup(&self, env: &mut ExtensionEnv<'_>) {
-        env.get_context()
-            .with(|ctx| -> rquickjs::Result<()> {
-                // 注册原生模块，支持 import { log } from '@webatom/console'
-                rquickjs::Module::declare_def::<ConsoleModule, _>(ctx.clone(), "@webatom/console")?;
+    fn native_module_specifiers(&self) -> &'static [&'static str] {
+        &["@webatom/console"]
+    }
 
-                // 直接注入 globalThis.console
-                let console = Object::new(ctx.clone())?;
-                console.set("log",   make_log_fn(&ctx, "log")?)?;
-                console.set("info",  make_log_fn(&ctx, "info")?)?;
-                console.set("warn",  make_warn_fn(&ctx)?)?;
-                console.set("error", make_error_fn(&ctx)?)?;
-                console.set("debug", make_debug_fn(&ctx)?)?;
-                ctx.globals().set("console", console)?;
-                Ok(())
-            })
-            .expect("failed to set up console");
+    fn native_setup(&self, env: &mut ExtensionEnv<'_>) {
+        env.declare_native_module::<ConsoleModule>("@webatom/console");
+    }
+
+    fn global_js(&self) -> Option<&'static str> {
+        Some(concat!(
+            "import { log, info, warn, error, debug } from '@webatom/console';\n",
+            "const _j = (...a) => a.map(String).join(' ');\n",
+            "globalThis.console = {\n",
+            "  log:   (...a) => log(_j(...a)),\n",
+            "  info:  (...a) => info(_j(...a)),\n",
+            "  warn:  (...a) => warn(_j(...a)),\n",
+            "  error: (...a) => error(_j(...a)),\n",
+            "  debug: (...a) => debug(_j(...a)),\n",
+            "};\n",
+        ))
     }
 }
