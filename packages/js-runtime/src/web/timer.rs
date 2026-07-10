@@ -5,7 +5,7 @@ use std::time::Duration;
 use rquickjs::{Ctx, Function, Persistent, Result, Value, module::{Declarations, Exports, ModuleDef}};
 use tokio::sync::oneshot;
 
-use crate::event_loop::{HostBridge, MacroTask};
+use crate::event_loop::{};
 use crate::extension::Extension;
 
 // Persistent<T> holds a *mut JSRuntime which is !Send by default.

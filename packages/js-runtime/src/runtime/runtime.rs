@@ -41,7 +41,7 @@ impl JsRuntime {
 
         for ext in &extensions {
             let mut env = ExtensionEnv::new(
-                &ctx,
+                ctx.clone(),
                 cancel_token.clone(),
                 event_port_registrar.clone(),
                 ext.name(),

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use js_runtime::{event_loop::HostBridge, Extension};
+use js_runtime::{ Extension};
 use rquickjs::{
     module::{Declarations, Exports, ModuleDef},
     Class, Ctx, Result,
@@ -106,7 +106,7 @@ impl Extension for DomExtension {
         &["webatom_ext_native:dom"]
     }
 
-    fn install(&self, ctx: &Ctx<'_>, host: &HostBridge) -> rquickjs::Result<()> {
+    fn native_setup(&self, ctx: &Ctx<'_>, host: &HostBridge) -> rquickjs::Result<()> {
         rquickjs::Module::declare_def::<DomModule, _>(ctx.clone(), "webatom_ext_native:dom")?;
         if let Some(state) = &self.state {
             ctx.store_userdata(state.clone())?;
@@ -122,7 +122,7 @@ impl Extension for DomExtension {
         Ok(())
     }
 
-    fn js_glue(&self) -> Option<&'static str> {
-        Some(include_str!("../js/dist/index.js"))
+    fn js_modules(&self) -> &[(&'static str, &'static str)] {
+        &[("dom", include_str!("../js/dist/index.js"))]
     }
 }

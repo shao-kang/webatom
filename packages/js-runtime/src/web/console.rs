@@ -77,7 +77,7 @@ impl Extension for ConsoleExtension {
         &["@webatom/console"]
     }
 
-    fn native_setup(&self, env: &mut ExtensionEnv<'_>) {
+    fn native_setup(&self, env: &mut ExtensionEnv) {
         env.declare_native_module::<ConsoleModule>("@webatom/console");
     }
 

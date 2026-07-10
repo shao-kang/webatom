@@ -13,17 +13,17 @@ use crate::event_loop::event_loop_impl::{EventPortRegistrar, EventSender, TaskTy
 /// - `declare_native_module::<M>(specifier)`：注册 Rust 原生模块（只允许 `module_specifiers()` 中声明的 specifier）
 ///
 /// 全局变量注入通过 `js_source()` 返回 ESM 代码实现，不在 Rust 侧直接操作 `Context`。
-pub struct ExtensionEnv<'a> {
-    context: &'a Context,
+pub struct ExtensionEnv {
+    context: Context,
     pub cancel: CancellationToken,
     ports: EventPortRegistrar,
     plugin_name: &'static str,
     allowed_specifiers: &'static [&'static str],
 }
 
-impl<'a> ExtensionEnv<'a> {
+impl ExtensionEnv {
     pub fn new(
-        context: &'a Context,
+        context: Context,
         cancel: CancellationToken,
         ports: EventPortRegistrar,
         plugin_name: &'static str,
@@ -43,6 +43,9 @@ impl<'a> ExtensionEnv<'a> {
             rquickjs::Module::declare_def::<M, _>(ctx.clone(), specifier)
                 .expect("failed to declare native module");
         });
+    }
+    pub fn get_context(&self) -> &Context {
+        &self.context
     }
 
     /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventSender`]。
@@ -109,7 +112,7 @@ pub trait Extension: Send + Sync + 'static {
 
     fn depends_on(&self) -> &'static [&'static str] { &[] }
 
-    fn native_setup(&self, _env: &mut ExtensionEnv<'_>) {}
+    fn native_setup(&self, _env: &mut ExtensionEnv) {}
 
     fn native_module_specifiers(&self) -> &'static [&'static str] { &[] }
 
