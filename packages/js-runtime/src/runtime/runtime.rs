@@ -1,11 +1,9 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use rquickjs::{Context, Runtime, FromJs};
 
-use crate::storage::{GlobalRoomStorage, RoomMemoryCenter};
 use crate::extension::{ExtensionEnv, ExtensionSet, Extension};
 use crate::event_loop::EventLoop;
 use crate::event_loop::event_loop_impl::EventPortRegistrar;
@@ -29,7 +27,11 @@ impl JsRuntime {
         let event_loop = EventLoop::new(runtime.clone(), cancel_token.clone());
         let event_loop_rc = Rc::new(RefCell::new(event_loop));
         let event_port_registrar = EventPortRegistrar::new(event_loop_rc.clone());
-        let ctx = Context::full(&runtime)?;
+        let context = Context::full(&runtime)?;
+        context.with(|js_ctx| {
+            js_ctx.store_userdata(event_port_registrar.clone())?;
+            Ok::<(), rquickjs::Error>(())
+        })?;
 
         // ctx.with(|js_ctx| {
         //     js_ctx.store_userdata(RoomMemoryCenter {
@@ -41,7 +43,7 @@ impl JsRuntime {
 
         for ext in &extensions {
             let mut env = ExtensionEnv::new(
-                &ctx,
+                &context,
                 cancel_token.clone(),
                 event_port_registrar.clone(),
                 ext.name(),
@@ -50,7 +52,7 @@ impl JsRuntime {
             ext.native_setup(&mut env);
         }
 
-        ctx.with(|js_ctx| {
+        context.with(|js_ctx| {
             for ext in &extensions {
                 // 用户可 import 的 JS 模块
                 for (specifier, source) in ext.js_modules() {
@@ -67,7 +69,7 @@ impl JsRuntime {
             Ok::<(), rquickjs::Error>(())
         })?;
 
-        Ok(Self { context: ctx, event_loop: event_loop_rc, cancel_token })
+        Ok(Self { context, event_loop: event_loop_rc, cancel_token })
     }
 
     pub fn builder() -> JsRuntimeBuilder {

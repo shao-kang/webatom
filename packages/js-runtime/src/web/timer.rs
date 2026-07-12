@@ -1,65 +1,59 @@
+use std::any::Any;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rquickjs::{Ctx, Function, Persistent, Result, Value, module::{Declarations, Exports, ModuleDef}};
+use rquickjs::{
+    Context, Ctx, Function, JsLifetime, Persistent, Result, Value,
+    module::{Declarations, Exports, ModuleDef},
+};
 use tokio::sync::oneshot;
 
-use crate::event_loop::{HostBridge, MacroTask};
-use crate::extension::Extension;
-
-// Persistent<T> holds a *mut JSRuntime which is !Send by default.
-// MacroTask closures are always executed inside context.with() on the JS thread,
-// so moving a Persistent across threads to deliver it is safe.
-struct SendPersistent<T>(Persistent<T>);
-unsafe impl<T> Send for SendPersistent<T> {}
-
-impl<T: rquickjs::JsLifetime<'static>> SendPersistent<T> {
-    fn restore<'js>(self, ctx: &Ctx<'js>) -> rquickjs::Result<T::Changed<'js>> {
-        self.0.restore(ctx)
-    }
-}
-
-impl<T: Clone> Clone for SendPersistent<T> {
-    fn clone(&self) -> Self {
-        SendPersistent(self.0.clone())
-    }
-}
+use crate::event_loop::event_loop_impl::{EventPortRegistrar, TaskType};
+use crate::extension::{ContextHandle, Extension, ExtensionEnv};
 
 // ──────────────────────────────────────────────────────────────
 // TimerState — shared between JS callbacks and tokio tasks
 // ──────────────────────────────────────────────────────────────
 
-struct TimerState {
+struct TimerStateInner {
     next_id: i32,
     cancel_senders: HashMap<i32, oneshot::Sender<()>>,
 }
 
-unsafe impl<'js> rquickjs::JsLifetime<'js> for TimerState {
+#[derive(Clone)]
+struct TimerState(Arc<Mutex<TimerStateInner>>);
+
+unsafe impl<'js> JsLifetime<'js> for TimerState {
     type Changed<'to> = TimerState;
 }
 
 impl TimerState {
     fn new() -> Self {
-        Self { next_id: 1, cancel_senders: HashMap::new() }
+        Self(Arc::new(Mutex::new(TimerStateInner {
+            next_id: 1,
+            cancel_senders: HashMap::new(),
+        })))
     }
 
-    fn register(&mut self) -> (i32, oneshot::Receiver<()>) {
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
+    fn register(&self) -> (i32, oneshot::Receiver<()>) {
+        let mut inner = self.0.lock().unwrap();
+        let id = inner.next_id;
+        inner.next_id = inner.next_id.wrapping_add(1);
         let (tx, rx) = oneshot::channel();
-        self.cancel_senders.insert(id, tx);
+        inner.cancel_senders.insert(id, tx);
         (id, rx)
     }
 
-    fn cancel(&mut self, id: i32) {
-        if let Some(tx) = self.cancel_senders.remove(&id) {
+    fn cancel(&self, id: i32) {
+        if let Some(tx) = self.0.lock().unwrap().cancel_senders.remove(&id) {
             let _ = tx.send(());
         }
     }
 
-    fn complete(&mut self, id: i32) {
-        self.cancel_senders.remove(&id);
+    fn complete(&self, id: i32) {
+        self.0.lock().unwrap().cancel_senders.remove(&id);
     }
 }
 
@@ -71,31 +65,30 @@ fn spawn_timeout<'js>(
     ctx: &Ctx<'js>,
     func: Function<'js>,
     delay: u64,
-    state: &Arc<Mutex<TimerState>>,
-    host: &HostBridge,
+    state: &TimerState,
+    context: &Context,
+    registrar: &EventPortRegistrar,
 ) -> Result<i32> {
-    let (id, mut cancel_rx) = state.lock().unwrap().register();
-    let keepalive = match host.runtime.keepalive.acquire() {
-        Some(g) => g,
-        None => return Ok(id),
-    };
-    let persistent = SendPersistent(Persistent::save(ctx, func));
-    let task_tx = host.io.task_tx.clone();
-    let state2 = state.clone();
+    let (id, mut cancel_rx) = state.register();
 
+    let persistent: Persistent<Function<'static>> = Persistent::save(ctx, func);
+    let handler_context = context.clone();
+    let mut registrar = registrar.clone();
+    let sender = registrar.register_event_port(TaskType::Macro, move |_payload: &dyn Any| {
+        let persistent = persistent.clone();
+        let _ = handler_context.with(|ctx| -> Result<()> {
+            let f = persistent.restore(&ctx)?;
+            f.call::<_, Value>(())?;
+            Ok(())
+        });
+    });
+
+    let state = state.clone();
     tokio::spawn(async move {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(delay)) => {
-                let task: MacroTask = Box::new(move |ctx| {
-                    let f = persistent.restore(&ctx)?;
-                    let _ = f.call::<_, Value>(());
-                    drop(keepalive);
-                    Ok(())
-                });
-                tokio::select! {
-                    _ = task_tx.send(task) => { state2.lock().unwrap().complete(id); }
-                    _ = &mut cancel_rx => {}
-                }
+                sender.send(());
+                state.complete(id);
             }
             _ = &mut cancel_rx => {}
         }
@@ -107,39 +100,35 @@ fn spawn_interval<'js>(
     ctx: &Ctx<'js>,
     func: Function<'js>,
     delay: u64,
-    state: &Arc<Mutex<TimerState>>,
-    host: &HostBridge,
+    state: &TimerState,
+    context: &Context,
+    registrar: &EventPortRegistrar,
 ) -> Result<i32> {
-    let (id, cancel_rx) = state.lock().unwrap().register();
-    let keepalive = match host.runtime.keepalive.acquire() {
-        Some(g) => g,
-        None => return Ok(id),
-    };
-    let persistent = SendPersistent(Persistent::save(ctx, func));
-    let task_tx = host.io.task_tx.clone();
-    let state2 = state.clone();
+    let (id, mut cancel_rx) = state.register();
 
+    let persistent: Persistent<Function<'static>> = Persistent::save(ctx, func);
+    let handler_context = context.clone();
+    let mut registrar = registrar.clone();
+    let sender = registrar.register_event_port(TaskType::Macro, move |_payload: &dyn Any| {
+        let persistent = persistent.clone();
+        let _ = handler_context.with(|ctx| -> Result<()> {
+            let f = persistent.restore(&ctx)?;
+            f.call::<_, Value>(())?;
+            Ok(())
+        });
+    });
+
+    let state = state.clone();
     tokio::spawn(async move {
-        let _keepalive = keepalive;
-        let mut cancel_rx = cancel_rx;
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(delay)) => {
-                    let func = persistent.clone();
-                    let task: MacroTask = Box::new(move |ctx| {
-                        let f = func.restore(&ctx)?;
-                        let _ = f.call::<_, Value>(());
-                        Ok(())
-                    });
-                    tokio::select! {
-                        _ = task_tx.send(task) => {}
-                        _ = &mut cancel_rx => { break; }
-                    }
+                    sender.send(());
                 }
                 _ = &mut cancel_rx => { break; }
             }
         }
-        state2.lock().unwrap().complete(id);
+        state.complete(id);
     });
     Ok(id)
 }
@@ -160,33 +149,42 @@ impl ModuleDef for TimerModule {
     }
 
     fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
-        let state = ctx.userdata::<Arc<Mutex<TimerState>>>()
+        let state: TimerState = ExtensionEnv::get_state::<TimerState>(ctx)
             .expect("TimerState not registered")
+            .deref()
             .clone();
-        let host = ctx.userdata::<HostBridge>()
-            .expect("HostBridge not registered")
+        let context: Context = ExtensionEnv::get_state::<ContextHandle>(ctx)
+            .expect("ContextHandle not registered")
+            .deref()
+            .0
+            .clone();
+        let registrar: EventPortRegistrar = ExtensionEnv::event_port_registrar(ctx)
+            .expect("EventPortRegistrar not registered")
+            .deref()
             .clone();
 
         let set_timeout = {
             let state = state.clone();
-            let host = host.clone();
+            let context = context.clone();
+            let registrar = registrar.clone();
             Function::new(ctx.clone(), move |ctx: Ctx<'js>, func: Function<'js>, delay: u64| {
-                spawn_timeout(&ctx, func, delay, &state, &host)
+                spawn_timeout(&ctx, func, delay, &state, &context, &registrar)
             })?
         };
 
         let set_interval = {
             let state = state.clone();
-            let host = host.clone();
+            let context = context.clone();
+            let registrar = registrar.clone();
             Function::new(ctx.clone(), move |ctx: Ctx<'js>, func: Function<'js>, delay: u64| {
-                spawn_interval(&ctx, func, delay, &state, &host)
+                spawn_interval(&ctx, func, delay, &state, &context, &registrar)
             })?
         };
 
         let clear_timeout = {
             let state = state.clone();
             Function::new(ctx.clone(), move |_ctx: Ctx, id: i32| {
-                state.lock().unwrap().cancel(id);
+                state.cancel(id);
                 Result::<()>::Ok(())
             })?
         };
@@ -194,7 +192,7 @@ impl ModuleDef for TimerModule {
         let clear_interval = {
             let state = state.clone();
             Function::new(ctx.clone(), move |_ctx: Ctx, id: i32| {
-                state.lock().unwrap().cancel(id);
+                state.cancel(id);
                 Result::<()>::Ok(())
             })?
         };
@@ -222,13 +220,13 @@ impl Extension for TimerExtension {
         &["@webatom/timer"]
     }
 
-    fn install(&self, ctx: &Ctx<'_>, _host: &HostBridge) -> rquickjs::Result<()> {
-        ctx.store_userdata(Arc::new(Mutex::new(TimerState::new())))?;
-        rquickjs::Module::declare_def::<TimerModule, _>(ctx.clone(), "@webatom/timer")?;
-        Ok(())
+    fn native_setup(&self, env: &mut ExtensionEnv<'_>) {
+        env.set_state(TimerState::new());
+        env.set_state(ContextHandle(env.context()));
+        env.declare_native_module::<TimerModule>("@webatom/timer");
     }
 
-    fn js_glue(&self) -> Option<&'static str> {
+    fn global_js(&self) -> Option<&'static str> {
         Some(concat!(
             "import { setTimeout, clearTimeout, setInterval, clearInterval } from '@webatom/timer';\n",
             "globalThis.setTimeout = setTimeout;\n",

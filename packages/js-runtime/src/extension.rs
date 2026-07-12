@@ -1,8 +1,21 @@
+use rquickjs::{Context, Ctx, JsLifetime, runtime::UserDataGuard};
 use std::any::Any;
-use rquickjs::{ Context, Ctx, JsLifetime, runtime::UserDataGuard};
 use tokio_util::sync::CancellationToken;
 
-use crate::{event_loop::event_loop_impl::{EventPortRegistrar, EventSender, TaskType}, storage::RoomMemoryCenter};
+use crate::{
+    event_loop::event_loop_impl::{EventPortRegistrar, EventSender, TaskType},
+    storage::RoomMemoryCenter,
+};
+
+/// 跨线程/跨 `'js` 持有 [`Context`] 的句柄，供事件端口 handler 在稍后回调 JS 时使用。
+///
+/// `Context` 本身可 `Clone`（内部引用计数），只需为其提供 `JsLifetime` 才能存入 userdata。
+#[derive(Clone)]
+pub struct ContextHandle(pub Context);
+
+unsafe impl<'js> JsLifetime<'js> for ContextHandle {
+    type Changed<'to> = ContextHandle;
+}
 
 // ── Extension 级环境 ───────────────────────────────────────────────────────────
 
@@ -13,6 +26,7 @@ use crate::{event_loop::event_loop_impl::{EventPortRegistrar, EventSender, TaskT
 /// - `declare_native_module::<M>(specifier)`：注册 Rust 原生模块（只允许 `module_specifiers()` 中声明的 specifier）
 ///
 /// 全局变量注入通过 `js_source()` 返回 ESM 代码实现，不在 Rust 侧直接操作 `Context`。
+#[derive()]
 pub struct ExtensionEnv<'a> {
     context: &'a Context,
     pub cancel: CancellationToken,
@@ -29,24 +43,38 @@ impl<'a> ExtensionEnv<'a> {
         plugin_name: &'static str,
         allowed_specifiers: &'static [&'static str],
     ) -> Self {
-        Self { context, cancel, ports, plugin_name, allowed_specifiers }
+        Self {
+            context,
+            cancel,
+            ports,
+            plugin_name,
+            allowed_specifiers,
+        }
     }
 
-   pub fn set_state< T>(&self, data: T)
-where
-    T: 'static + for<'js>JsLifetime<'js>,
-{
-    self.context.with(|ctx| {
-        ctx.store_userdata(data).unwrap();
-    });
-}
-    pub fn get_state<'js, T>(ctx: &'js Ctx<'js>) -> Option<UserDataGuard<'js, T>>
-where
-    T: 'static + JsLifetime<'js>,
-{
-    ctx.userdata::<T>()
-}
-    
+    /// 返回当前 `Context` 的克隆，供需要在异步任务/事件端口 handler 中稍后调用 JS 的场景持有。
+    pub fn context(&self) -> Context {
+        self.context.clone()
+    }
+
+    pub fn set_state<T>(&self, data: T)
+    where
+        T: 'static + for<'js> JsLifetime<'js>,
+    {
+        self.context.with(|ctx| {
+            ctx.store_userdata(data).unwrap();
+        });
+    }
+    pub fn get_state<'c, 'js, T>(ctx: &'c Ctx<'js>) -> Option<UserDataGuard<'c, T>>
+    where
+        T: 'static + JsLifetime<'js>,
+    {
+        ctx.userdata::<T>()
+    }
+
+    pub fn event_port_registrar<'c, 'js>(ctx: &'c Ctx<'js>) -> Option<UserDataGuard<'c, EventPortRegistrar>> {
+        ctx.userdata::<EventPortRegistrar>()
+    }
 
     /// 注册原生 Rust 模块，specifier 必须在 `native_module_specifiers()` 中声明。
     pub fn declare_native_module<M: rquickjs::module::ModuleDef>(&self, specifier: &'static str) {
@@ -68,9 +96,6 @@ where
     {
         self.ports.register_event_port(task_type, handler)
     }
-
-
-    
 }
 
 // ── Extension trait ────────────────────────────────────────────────────────────
@@ -85,15 +110,23 @@ where
 pub trait Extension: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
-    fn depends_on(&self) -> &'static [&'static str] { &[] }
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     fn native_setup(&self, _env: &mut ExtensionEnv<'_>) {}
 
-    fn native_module_specifiers(&self) -> &'static [&'static str] { &[] }
+    fn native_module_specifiers(&self) -> &'static [&'static str] {
+        &[]
+    }
 
-    fn js_modules(&self) -> &[(&'static str, &'static str)] { &[] }
+    fn js_modules(&self) -> &[(&'static str, &'static str)] {
+        &[]
+    }
 
-    fn global_js(&self) -> Option<&'static str> { None }
+    fn global_js(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 pub type ExtensionSet = Vec<Box<dyn Extension>>;
