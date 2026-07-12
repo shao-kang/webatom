@@ -31,13 +31,13 @@ impl JsRuntime {
         let event_port_registrar = EventPortRegistrar::new(event_loop_rc.clone());
         let ctx = Context::full(&runtime)?;
 
-        ctx.with(|js_ctx| {
-            js_ctx.store_userdata(RoomMemoryCenter {
-                global: Mutex::new(GlobalRoomStorage::new(cancel_token.clone())),
-                private_manifest: Mutex::new(HashMap::new()),
-            })?;
-            Ok::<(), rquickjs::Error>(())
-        })?;
+        // ctx.with(|js_ctx| {
+        //     js_ctx.store_userdata(RoomMemoryCenter {
+        //         global: Mutex::new(GlobalRoomStorage::new(cancel_token.clone())),
+        //         private_manifest: Mutex::new(HashMap::new()),
+        //     })?;
+        //     Ok::<(), rquickjs::Error>(())
+        // })?;
 
         for ext in &extensions {
             let mut env = ExtensionEnv::new(

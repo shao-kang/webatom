@@ -1,8 +1,8 @@
 use std::any::Any;
-use rquickjs::{ Context, Ctx};
+use rquickjs::{ Context, Ctx, JsLifetime, runtime::UserDataGuard};
 use tokio_util::sync::CancellationToken;
 
-use crate::event_loop::event_loop_impl::{EventPortRegistrar, EventSender, TaskType};
+use crate::{event_loop::event_loop_impl::{EventPortRegistrar, EventSender, TaskType}, storage::RoomMemoryCenter};
 
 // ── Extension 级环境 ───────────────────────────────────────────────────────────
 
@@ -32,6 +32,22 @@ impl<'a> ExtensionEnv<'a> {
         Self { context, cancel, ports, plugin_name, allowed_specifiers }
     }
 
+   pub fn set_state< T>(&self, data: T)
+where
+    T: 'static + for<'js>JsLifetime<'js>,
+{
+    self.context.with(|ctx| {
+        ctx.store_userdata(data).unwrap();
+    });
+}
+    pub fn get_state<'js, T>(ctx: &'js Ctx<'js>) -> Option<UserDataGuard<'js, T>>
+where
+    T: 'static + JsLifetime<'js>,
+{
+    ctx.userdata::<T>()
+}
+    
+
     /// 注册原生 Rust 模块，specifier 必须在 `native_module_specifiers()` 中声明。
     pub fn declare_native_module<M: rquickjs::module::ModuleDef>(&self, specifier: &'static str) {
         assert!(
@@ -53,46 +69,8 @@ impl<'a> ExtensionEnv<'a> {
         self.ports.register_event_port(task_type, handler)
     }
 
-    /// 初始化本插件在当前 Context 的私有存储（`setup` 中调用一次）。
-    pub fn storage_init<T: Any + Send + Sync>(&self, ctx: &Ctx<'_>, data: T) {
-        let center = ctx.userdata::<crate::storage::RoomMemoryCenter>()
-            .expect("RoomMemoryCenter not initialized");
-        let mut manifest = center.private_manifest.lock().unwrap();
-        manifest.insert(
-            self.plugin_name.to_string(),
-            crate::storage::PluginPrivateStorage { payload: Some(Box::new(data)) },
-        );
-    }
 
-    /// 只读访问本插件的私有存储。
-    pub fn storage_get<T: 'static, R>(
-        &self,
-        ctx: &Ctx<'_>,
-        f: impl FnOnce(&T) -> R,
-    ) -> Option<R> {
-        let center = ctx.userdata::<crate::storage::RoomMemoryCenter>()?;
-        let manifest = center.private_manifest.lock().unwrap();
-        let concrete = manifest
-            .get(self.plugin_name)?
-            .payload.as_ref()?
-            .downcast_ref::<T>()?;
-        Some(f(concrete))
-    }
-
-    /// 可变访问本插件的私有存储。
-    pub fn storage_get_mut<T: 'static, R>(
-        &self,
-        ctx: &Ctx<'_>,
-        f: impl FnOnce(&mut T) -> R,
-    ) -> Option<R> {
-        let center = ctx.userdata::<crate::storage::RoomMemoryCenter>()?;
-        let mut manifest = center.private_manifest.lock().unwrap();
-        let concrete = manifest
-            .get_mut(self.plugin_name)?
-            .payload.as_mut()?
-            .downcast_mut::<T>()?;
-        Some(f(concrete))
-    }
+    
 }
 
 // ── Extension trait ────────────────────────────────────────────────────────────
