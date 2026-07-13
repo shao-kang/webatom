@@ -21,12 +21,9 @@ struct TimerStateInner {
     cancel_senders: HashMap<i32, oneshot::Sender<()>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, JsLifetime)]
 struct TimerState(Arc<Mutex<TimerStateInner>>);
 
-unsafe impl<'js> JsLifetime<'js> for TimerState {
-    type Changed<'to> = TimerState;
-}
 
 impl TimerState {
     fn new() -> Self {
