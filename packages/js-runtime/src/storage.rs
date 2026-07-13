@@ -1,5 +1,7 @@
 use std::any::Any;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use tokio_util::sync::CancellationToken;
 
 pub struct GlobalRoomStorage {
@@ -22,9 +24,11 @@ pub struct PluginPrivateStorage {
 }
 
 use std::sync::Mutex;
+
+use crate::anymap;
 pub struct RoomMemoryCenter {
     pub global: Mutex<GlobalRoomStorage>,
-    pub private_manifest: Mutex<HashMap<String, PluginPrivateStorage>>,
+    pub private_manifest: Rc<RefCell<anymap::AnyMap>>,
 }
 impl Drop for RoomMemoryCenter {
     fn drop(&mut self) {
@@ -38,9 +42,9 @@ impl Drop for RoomMemoryCenter {
         }
         
         // 顺便把私有仓也安全清空
-        if let Ok(manifest) = self.private_manifest.get_mut() {
-            manifest.clear();
-        }
+        let mut manifest = self.private_manifest.borrow_mut();
+        manifest.clear();
+        
     }
 }
 

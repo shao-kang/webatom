@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use rquickjs::Runtime;
+use rquickjs::{JsLifetime, Runtime};
 
 // ──────────────────────────────────────────────────────────────
 // 任务优先级分级
@@ -282,10 +282,12 @@ impl EventLoop {
 /// 事件端口注册代理，在 Extension::setup 中使用。
 ///
 /// 只暴露注册能力，Extension 无需感知完整的 [`EventLoop`] 接口。
-#[derive(Clone)]
+#[derive(Clone, JsLifetime)]
 pub struct EventPortRegistrar {
     event_loop:Rc<RefCell<EventLoop>>,
 }
+
+
 
 impl EventPortRegistrar {
     pub fn new(event_loop: Rc<RefCell<EventLoop>>) -> Self {

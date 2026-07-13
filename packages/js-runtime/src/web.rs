@@ -2,7 +2,7 @@ pub mod console;
 // pub mod fetch;
 // pub mod microtask;
 // pub mod stream;
-// pub mod timer;
+pub mod timer;
 
 pub use console::ConsoleExtension;
 // pub use fetch::FetchExtension;
