@@ -1,17 +1,16 @@
-use std::any::Any;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rquickjs::{
-    Context, Ctx, Function, JsLifetime, Persistent, Result, Value,
+    Ctx, Function, JsLifetime, Persistent, Result, Value,
     module::{Declarations, Exports, ModuleDef},
 };
 use tokio::sync::oneshot;
 
 use crate::event_loop::event_loop_impl::{EventPortRegistrar, TaskType};
-use crate::extension::{ContextHandle, Extension, ExtensionEnv};
+use crate::extension::{Extension, ExtensionEnv};
 
 // ──────────────────────────────────────────────────────────────
 // TimerState — shared between JS callbacks and tokio tasks
@@ -62,25 +61,21 @@ impl TimerState {
 // ──────────────────────────────────────────────────────────────
 
 fn spawn_timeout<'js>(
-    ctx: &Ctx<'js>,
     func: Function<'js>,
     delay: u64,
     state: &TimerState,
-    context: &Context,
     registrar: &EventPortRegistrar,
 ) -> Result<i32> {
     let (id, mut cancel_rx) = state.register();
 
-    let persistent: Persistent<Function<'static>> = Persistent::save(ctx, func);
-    let handler_context = context.clone();
+    let ctx = func.ctx().clone();
+    let persistent: Persistent<Function<'static>> = Persistent::save(&ctx, func);
     let mut registrar = registrar.clone();
-    let sender = registrar.register_event_port(TaskType::Macro, move |_payload: &dyn Any| {
+    let sender = registrar.register_js_event_port(TaskType::Macro, move |ctx, _payload| {
         let persistent = persistent.clone();
-        let _ = handler_context.with(|ctx| -> Result<()> {
-            let f = persistent.restore(&ctx)?;
-            f.call::<_, Value>(())?;
-            Ok(())
-        });
+        let f = persistent.restore(&ctx)?;
+        f.call::<_, Value>(())?;
+        Ok(())
     });
 
     let state = state.clone();
@@ -97,25 +92,21 @@ fn spawn_timeout<'js>(
 }
 
 fn spawn_interval<'js>(
-    ctx: &Ctx<'js>,
     func: Function<'js>,
     delay: u64,
     state: &TimerState,
-    context: &Context,
     registrar: &EventPortRegistrar,
 ) -> Result<i32> {
     let (id, mut cancel_rx) = state.register();
 
-    let persistent: Persistent<Function<'static>> = Persistent::save(ctx, func);
-    let handler_context = context.clone();
+    let ctx = func.ctx().clone();
+    let persistent: Persistent<Function<'static>> = Persistent::save(&ctx, func);
     let mut registrar = registrar.clone();
-    let sender = registrar.register_event_port(TaskType::Macro, move |_payload: &dyn Any| {
+    let sender = registrar.register_js_event_port(TaskType::Macro, move |ctx, _payload| {
         let persistent = persistent.clone();
-        let _ = handler_context.with(|ctx| -> Result<()> {
-            let f = persistent.restore(&ctx)?;
-            f.call::<_, Value>(())?;
-            Ok(())
-        });
+        let f = persistent.restore(&ctx)?;
+        f.call::<_, Value>(())?;
+        Ok(())
     });
 
     let state = state.clone();
@@ -153,11 +144,6 @@ impl ModuleDef for TimerModule {
             .expect("TimerState not registered")
             .deref()
             .clone();
-        let context: Context = ExtensionEnv::get_state::<ContextHandle>(ctx)
-            .expect("ContextHandle not registered")
-            .deref()
-            .0
-            .clone();
         let registrar: EventPortRegistrar = ExtensionEnv::event_port_registrar(ctx)
             .expect("EventPortRegistrar not registered")
             .deref()
@@ -165,19 +151,17 @@ impl ModuleDef for TimerModule {
 
         let set_timeout = {
             let state = state.clone();
-            let context = context.clone();
             let registrar = registrar.clone();
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, func: Function<'js>, delay: u64| {
-                spawn_timeout(&ctx, func, delay, &state, &context, &registrar)
+            Function::new(ctx.clone(), move |func: Function<'js>, delay: u64| {
+                spawn_timeout(func, delay, &state, &registrar)
             })?
         };
 
         let set_interval = {
             let state = state.clone();
-            let context = context.clone();
             let registrar = registrar.clone();
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, func: Function<'js>, delay: u64| {
-                spawn_interval(&ctx, func, delay, &state, &context, &registrar)
+            Function::new(ctx.clone(), move |func: Function<'js>, delay: u64| {
+                spawn_interval(func, delay, &state, &registrar)
             })?
         };
 
@@ -222,7 +206,6 @@ impl Extension for TimerExtension {
 
     fn native_setup(&self, env: &mut ExtensionEnv<'_>) {
         env.set_state(TimerState::new());
-        env.set_state(ContextHandle(env.context()));
         env.declare_native_module::<TimerModule>("@webatom/timer");
     }
 

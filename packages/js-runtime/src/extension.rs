@@ -76,6 +76,11 @@ impl<'a> ExtensionEnv<'a> {
         ctx.userdata::<EventPortRegistrar>()
     }
 
+    /// 依据当前 `ctx` 从 userdata 中取出 [`ContextHandle`]，返回可跨线程/跨 `'js` 持有的 `Context` 克隆。
+    pub fn get_context<'js>(ctx: &Ctx<'js>) -> Option<Context> {
+        ctx.userdata::<ContextHandle>().map(|guard| guard.0.clone())
+    }
+
     /// 注册原生 Rust 模块，specifier 必须在 `native_module_specifiers()` 中声明。
     pub fn declare_native_module<M: rquickjs::module::ModuleDef>(&self, specifier: &'static str) {
         assert!(
@@ -87,9 +92,6 @@ impl<'a> ExtensionEnv<'a> {
             rquickjs::Module::declare_def::<M, _>(ctx.clone(), specifier)
                 .expect("failed to declare native module");
         });
-    }
-    pub fn get_context(&self) -> &Context {
-        &self.context
     }
 
     /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventSender`]。

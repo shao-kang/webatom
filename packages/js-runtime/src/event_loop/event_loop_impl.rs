@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use rquickjs::{JsLifetime, Runtime};
+use rquickjs::{Context, Ctx, JsLifetime, Runtime};
 
 // ──────────────────────────────────────────────────────────────
 // 任务优先级分级
@@ -285,13 +285,23 @@ impl EventLoop {
 #[derive(Clone, JsLifetime)]
 pub struct EventPortRegistrar {
     event_loop:Rc<RefCell<EventLoop>>,
+    context: Context,
 }
 
 
 
 impl EventPortRegistrar {
-    pub fn new(event_loop: Rc<RefCell<EventLoop>>) -> Self {
-        Self { event_loop }
+    pub fn new(event_loop: Rc<RefCell<EventLoop>>, context: Context) -> Self {
+        Self { event_loop, context }
+    }
+    pub fn register_js_event_port<F>(&mut self, task_type: TaskType, mut handler: F) -> EventSender
+    where
+        F: FnMut(Ctx<'_>, &dyn Any) -> rquickjs::Result<()> + 'static,
+    {
+        let context = self.context.clone();
+        self.event_loop.borrow_mut().register_event_port(task_type, move |payload: &dyn Any| {
+            let _ = context.with(|ctx| handler(ctx, payload));
+        })
     }
 
     pub fn register_event_port<F>(&mut self, task_type: TaskType, handler: F) -> EventSender

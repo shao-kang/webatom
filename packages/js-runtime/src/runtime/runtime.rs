@@ -26,8 +26,9 @@ impl JsRuntime {
 
         let event_loop = EventLoop::new(runtime.clone(), cancel_token.clone());
         let event_loop_rc = Rc::new(RefCell::new(event_loop));
-        let event_port_registrar = EventPortRegistrar::new(event_loop_rc.clone());
         let context = Context::full(&runtime)?;
+        let event_port_registrar = EventPortRegistrar::new(event_loop_rc.clone(), context.clone());
+        
         context.with(|js_ctx| {
             js_ctx.store_userdata(event_port_registrar.clone())?;
             Ok::<(), rquickjs::Error>(())
