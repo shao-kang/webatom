@@ -20,6 +20,8 @@ use rquickjs::{Context, Ctx, JsLifetime, Runtime};
 pub enum TaskType {
     /// 微任务检查点后立即执行，对应 `queueMicrotask` 后紧跟的回调。
     AfterMicro,
+    /// 帧任务级别，对应 `requestAnimationFrame`
+    Raf,
     /// 宏任务级别，对应 `setTimeout` / `setInterval`。
     Macro,
     /// 空闲任务，仅在高优队列为空时消费，对应 `requestIdleCallback`。
@@ -44,7 +46,7 @@ pub struct EventEnvelope {
 
 // EventSender 的实际数据，Arc 包裹，最后一个 clone drop 时自动通知 EventLoop 清理 handler。
 struct EventSenderInner {
-    tx: mpsc::Sender<EventEnvelope>,
+    tx: mpsc::UnboundedSender<EventEnvelope>,
     handler_id: HandlerId,
     cleanup_tx: mpsc::UnboundedSender<HandlerId>,
 }
@@ -65,7 +67,7 @@ pub struct EventSender {
 
 impl EventSender {
     pub fn send(&self, payload: impl Any + Send) {
-        let _ = self.inner.tx.try_send(EventEnvelope {
+        let _ = self.inner.tx.send(EventEnvelope {
             created_at: Instant::now(),
             handler_id: self.inner.handler_id,
             payload: Box::new(payload),
@@ -80,7 +82,7 @@ impl EventSender {
 /// 驱动 QuickJS 运行时的主事件循环。
 ///
 /// 持有三条按优先级分级的 channel，统一消费所有插件推送的事件，
-/// 保证跨插件的调度顺序：AfterMicro → Macro → Idle。
+/// 保证跨插件的调度顺序：AfterMicro → Raf → Macro → Idle。
 ///
 /// 退出策略：
 /// - 主动退出：`cancel_token` 被取消时立即中止；
@@ -89,13 +91,15 @@ pub struct EventLoop {
     runtime: Runtime,
     cancel_token: CancellationToken,
 
-    after_micro_rx: mpsc::Receiver<EventEnvelope>,
-    macro_rx: mpsc::Receiver<EventEnvelope>,
-    idle_rx: mpsc::Receiver<EventEnvelope>,
+    after_micro_rx: mpsc::UnboundedReceiver<EventEnvelope>,
+    raf_rx: mpsc::UnboundedReceiver<EventEnvelope>,
+    macro_rx: mpsc::UnboundedReceiver<EventEnvelope>,
+    idle_rx: mpsc::UnboundedReceiver<EventEnvelope>,
 
-    after_micro_tx: mpsc::Sender<EventEnvelope>,
-    macro_tx: mpsc::Sender<EventEnvelope>,
-    idle_tx: mpsc::Sender<EventEnvelope>,
+    after_micro_tx: mpsc::UnboundedSender<EventEnvelope>,
+    raf_tx: mpsc::UnboundedSender<EventEnvelope>,
+    macro_tx: mpsc::UnboundedSender<EventEnvelope>,
+    idle_tx: mpsc::UnboundedSender<EventEnvelope>,
 
     // handler 永远在 EventLoop 线程消费，无需 Send 约束
     handlers: HashMap<HandlerId, Box<dyn FnMut(&dyn Any)>>,
@@ -112,17 +116,20 @@ pub struct EventLoop {
 
 impl EventLoop {
     pub fn new(runtime: Runtime, cancel_token: CancellationToken) -> Self {
-        let (after_micro_tx, after_micro_rx) = mpsc::channel(128);
-        let (macro_tx, macro_rx) = mpsc::channel(128);
-        let (idle_tx, idle_rx) = mpsc::channel(128);
+        let (after_micro_tx, after_micro_rx) = mpsc::unbounded_channel();
+        let (raf_tx, raf_rx) = mpsc::unbounded_channel();
+        let (macro_tx, macro_rx) = mpsc::unbounded_channel();
+        let (idle_tx, idle_rx) = mpsc::unbounded_channel();
         let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
         Self {
             runtime,
             cancel_token,
             after_micro_rx,
+            raf_rx,
             macro_rx,
             idle_rx,
             after_micro_tx,
+            raf_tx,
             macro_tx,
             idle_tx,
             handlers: HashMap::new(),
@@ -153,6 +160,7 @@ impl EventLoop {
 
         let tx = match task_type {
             TaskType::AfterMicro => self.after_micro_tx.clone(),
+            TaskType::Raf        => self.raf_tx.clone(),
             TaskType::Macro      => self.macro_tx.clone(),
             TaskType::Idle       => self.idle_tx.clone(),
         };
@@ -191,7 +199,18 @@ impl EventLoop {
                 continue;
             }
 
-            // ── 2. Macro（Idle 未饥饿时优先）────────────────────────────
+            // ── 2. Raf：全部 drain，对应 requestAnimationFrame ───────────
+            let mut raf_fired = false;
+            while let Ok(env) = self.raf_rx.try_recv() {
+                Self::dispatch(&mut self.handlers, env);
+                raf_fired = true;
+            }
+            if raf_fired {
+                self.drain_jobs();
+                continue;
+            }
+
+            // ── 3. Macro（Idle 未饥饿时优先）────────────────────────────
             const MAX_IDLE_SKIPS: u32 = 100;
             let idle_starved = self.idle_skipped_count >= MAX_IDLE_SKIPS;
 
@@ -244,6 +263,7 @@ impl EventLoop {
                 biased;
                 _ = self.cancel_token.cancelled() => break,
                 Some(_) = self.after_micro_rx.recv() => {},
+                Some(_) = self.raf_rx.recv() => {},
                 Some(_) = self.macro_rx.recv() => {},
                 Some(_) = self.idle_rx.recv() => {},
             }
