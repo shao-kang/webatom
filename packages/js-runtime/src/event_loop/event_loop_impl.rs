@@ -8,7 +8,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 use rquickjs::{Context, Ctx, JsLifetime, Runtime, runtime::UserDataGuard};
 
-use super::render_scheduler::{RenderScheduler, HeadlessRenderScheduler};
+use super::render_scheduler::{RenderScheduler};
 
 // ──────────────────────────────────────────────────────────────
 // 任务优先级分级
@@ -119,11 +119,9 @@ pub struct EventLoop {
 }
 
 impl EventLoop {
-    pub fn new(runtime: Runtime, cancel_token: CancellationToken) -> Self {
-        Self::with_scheduler(runtime, cancel_token, HeadlessRenderScheduler)
-    }
+   
 
-    pub fn with_scheduler(
+    pub fn new(
         runtime: Runtime,
         cancel_token: CancellationToken,
         mut scheduler: impl RenderScheduler,

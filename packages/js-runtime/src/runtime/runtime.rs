@@ -25,7 +25,7 @@ impl JsRuntime {
         let runtime = Runtime::new()?;
         let extensions = topological_sort(extensions);
 
-        let event_loop = EventLoop::with_scheduler(runtime.clone(), cancel_token.clone(), render_scheduler);
+        let event_loop = EventLoop::new(runtime.clone(), cancel_token.clone(), render_scheduler);
         let event_loop_rc = Rc::new(RefCell::new(event_loop));
         let context = Context::full(&runtime)?;
         let event_port_registrar = EventPortRegistrar::new(event_loop_rc.clone(), context.clone());
