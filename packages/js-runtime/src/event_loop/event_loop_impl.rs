@@ -1,13 +1,14 @@
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use slab::Slab;
+use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
-use rquickjs::{Context, Ctx, JsLifetime, Runtime};
+use rquickjs::{Context, Ctx, JsLifetime, Runtime, runtime::UserDataGuard};
+
+use super::render_scheduler::{RenderScheduler, HeadlessRenderScheduler};
 
 // ──────────────────────────────────────────────────────────────
 // 任务优先级分级
@@ -15,13 +16,10 @@ use rquickjs::{Context, Ctx, JsLifetime, Runtime};
 
 /// 任务的调度优先级。
 ///
-/// 消费顺序：AfterMicro → Macro → Idle。
+/// 消费顺序：Macro → Idle。
+/// RAF 由 RenderScheduler 在 VSync 时机外部推送，不通过此枚举路由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskType {
-    /// 微任务检查点后立即执行，对应 `queueMicrotask` 后紧跟的回调。
-    AfterMicro,
-    /// 帧任务级别，对应 `requestAnimationFrame`
-    Raf,
+pub enum QueueKind {
     /// 宏任务级别，对应 `setTimeout` / `setInterval`。
     Macro,
     /// 空闲任务，仅在高优队列为空时消费，对应 `requestIdleCallback`。
@@ -32,28 +30,34 @@ pub enum TaskType {
 // 事件信封与发送端
 // ──────────────────────────────────────────────────────────────
 
-pub type HandlerId = u32;
+pub type HandlerId = usize;
 
 /// 跨线程传递的事件信封。
 ///
 /// 只携带 payload 和 handler_id；handler 本体留在 EventLoop 线程，
 /// 因此 handler 可持有 `Rc`、`RefCell` 等 `!Send` 数据。
+///
+/// `_keep_alive` 持有 `EventSenderGuard` 的引用，保证 envelope 还在 channel 时
+/// handler 不会被提前清理。
 pub struct EventEnvelope {
-    pub created_at: Instant,
+    pub queued_at: Instant,
     pub handler_id: HandlerId,
     pub payload: Box<dyn Any + Send>,
+    _keep_alive: Arc<EventSenderGuard>,
 }
 
-// EventSender 的实际数据，Arc 包裹，最后一个 clone drop 时自动通知 EventLoop 清理 handler。
-struct EventSenderInner {
-    tx: mpsc::UnboundedSender<EventEnvelope>,
+// 只负责生命周期守卫，不含 tx，避免 EventEnvelope → Arc<Guard> → Sender<EventEnvelope> 的循环引用。
+// 最后一个 clone drop 时自动通知 EventLoop 清理 handler。
+struct EventSenderGuard {
     handler_id: HandlerId,
     cleanup_tx: mpsc::UnboundedSender<HandlerId>,
+    notify: Arc<Notify>,
 }
 
-impl Drop for EventSenderInner {
+impl Drop for EventSenderGuard {
     fn drop(&mut self) {
         let _ = self.cleanup_tx.send(self.handler_id);
+        self.notify.notify_one();
     }
 }
 
@@ -62,16 +66,19 @@ impl Drop for EventSenderInner {
 /// 所有 clone 全部 drop 后，对应的 handler 会从 EventLoop 中自动移除。
 #[derive(Clone)]
 pub struct EventSender {
-    inner: Arc<EventSenderInner>,
+    tx: mpsc::UnboundedSender<EventEnvelope>,
+    guard: Arc<EventSenderGuard>,
 }
 
 impl EventSender {
     pub fn send(&self, payload: impl Any + Send) {
-        let _ = self.inner.tx.send(EventEnvelope {
-            created_at: Instant::now(),
-            handler_id: self.inner.handler_id,
+        let _ = self.tx.send(EventEnvelope {
+            queued_at: Instant::now(),
+            handler_id: self.guard.handler_id,
             payload: Box::new(payload),
+            _keep_alive: Arc::clone(&self.guard),
         });
+        self.guard.notify.notify_one();
     }
 }
 
@@ -81,8 +88,9 @@ impl EventSender {
 
 /// 驱动 QuickJS 运行时的主事件循环。
 ///
-/// 持有三条按优先级分级的 channel，统一消费所有插件推送的事件，
-/// 保证跨插件的调度顺序：AfterMicro → Raf → Macro → Idle。
+/// 持有两条按优先级分级的 channel（Macro / Idle），统一消费所有插件推送的事件。
+/// RAF 由外部 `RenderScheduler` 在 VSync 时机以 `Vec<EventEnvelope>` 批次推送，
+/// 不通过 `QueueKind` 路由，保证帧快照语义（rAF 内再注册不进入本帧）。
 ///
 /// 退出策略：
 /// - 主动退出：`cancel_token` 被取消时立即中止；
@@ -90,54 +98,58 @@ impl EventSender {
 pub struct EventLoop {
     runtime: Runtime,
     cancel_token: CancellationToken,
+    notify: Arc<Notify>,
 
-    after_micro_rx: mpsc::UnboundedReceiver<EventEnvelope>,
-    raf_rx: mpsc::UnboundedReceiver<EventEnvelope>,
+    /// 接收 RenderScheduler 每帧推送的 RAF 批次（已快照，可直接 dispatch）。
+    raf_batch_rx: mpsc::UnboundedReceiver<Vec<EventEnvelope>>,
+
     macro_rx: mpsc::UnboundedReceiver<EventEnvelope>,
     idle_rx: mpsc::UnboundedReceiver<EventEnvelope>,
 
-    after_micro_tx: mpsc::UnboundedSender<EventEnvelope>,
-    raf_tx: mpsc::UnboundedSender<EventEnvelope>,
     macro_tx: mpsc::UnboundedSender<EventEnvelope>,
     idle_tx: mpsc::UnboundedSender<EventEnvelope>,
 
-    // handler 永远在 EventLoop 线程消费，无需 Send 约束
-    handlers: HashMap<HandlerId, Box<dyn FnMut(&dyn Any)>>,
-    next_id: HandlerId,
+    handlers: Slab<Box<dyn FnMut(&dyn Any)>>,
 
     cleanup_tx: mpsc::UnboundedSender<HandlerId>,
     cleanup_rx: mpsc::UnboundedReceiver<HandlerId>,
 
-    // 饥饿保护：Idle 连续被跳过超过此次数，强制优先执行
-    idle_skipped_count: u32,
-    // 事件在队列中等待时间小于此阈值时，Macro 任务执行前先 yield 让权
-    starvation_threshold: Duration,
+    idle_peeked: Option<EventEnvelope>,
+    idle_promote_timeout: Duration,
 }
 
 impl EventLoop {
     pub fn new(runtime: Runtime, cancel_token: CancellationToken) -> Self {
-        let (after_micro_tx, after_micro_rx) = mpsc::unbounded_channel();
-        let (raf_tx, raf_rx) = mpsc::unbounded_channel();
+        Self::with_scheduler(runtime, cancel_token, HeadlessRenderScheduler)
+    }
+
+    pub fn with_scheduler(
+        runtime: Runtime,
+        cancel_token: CancellationToken,
+        mut scheduler: impl RenderScheduler,
+    ) -> Self {
+        let notify = Arc::new(Notify::new());
+        let (raf_batch_tx, raf_batch_rx) = mpsc::unbounded_channel();
         let (macro_tx, macro_rx) = mpsc::unbounded_channel();
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();
         let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
+
+        scheduler.connect(raf_batch_tx);
+
         Self {
             runtime,
             cancel_token,
-            after_micro_rx,
-            raf_rx,
+            notify,
+            raf_batch_rx,
             macro_rx,
             idle_rx,
-            after_micro_tx,
-            raf_tx,
             macro_tx,
             idle_tx,
-            handlers: HashMap::new(),
-            next_id: 0,
+            handlers: Slab::new(),
             cleanup_tx,
             cleanup_rx,
-            idle_skipped_count: 0,
-            starvation_threshold: Duration::from_millis(5),
+            idle_peeked: None,
+            idle_promote_timeout: Duration::from_millis(50),
         }
     }
 
@@ -145,30 +157,22 @@ impl EventLoop {
     ///
     /// `handler` 不要求 `Send`，可持有 `Rc`、`RefCell` 等单线程数据。
     /// 所有 [`EventSender`] clone 全部 drop 后，handler 自动从注册表移除。
-    pub fn register_event_port<F>(&mut self, task_type: TaskType, handler: F) -> EventSender
+    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventSender
     where
         F: FnMut(&dyn Any) + 'static,
     {
-        let id = loop {
-            let candidate = self.next_id;
-            self.next_id = self.next_id.checked_add(1).expect("HandlerId exhausted");
-            if let Entry::Vacant(e) = self.handlers.entry(candidate) {
-                e.insert(Box::new(handler));
-                break candidate;
-            }
-        };
+        let id = self.handlers.insert(Box::new(handler));
 
-        let tx = match task_type {
-            TaskType::AfterMicro => self.after_micro_tx.clone(),
-            TaskType::Raf        => self.raf_tx.clone(),
-            TaskType::Macro      => self.macro_tx.clone(),
-            TaskType::Idle       => self.idle_tx.clone(),
+        let tx = match queue {
+            QueueKind::Macro => self.macro_tx.clone(),
+            QueueKind::Idle  => self.idle_tx.clone(),
         };
         EventSender {
-            inner: Arc::new(EventSenderInner {
-                tx,
+            tx,
+            guard: Arc::new(EventSenderGuard {
                 handler_id: id,
                 cleanup_tx: self.cleanup_tx.clone(),
+                notify: self.notify.clone(),
             }),
         }
     }
@@ -180,95 +184,81 @@ impl EventLoop {
                 break;
             }
 
-            // 清理已全部 drop 的 sender 对应的 handler
-            while let Ok(id) = self.cleanup_rx.try_recv() {
-                self.handlers.remove(&id);
-            }
-
-            // ── drain JS microtask 队列（规范：先于宏任务）────────────────
+            // ── 先执行已有的 JS jobs（规范：每个 task 前先 checkpoint）───
             self.drain_jobs();
 
-            // ── 1. AfterMicro：全部 drain ────────────────────────────────
-            let mut after_micro_fired = false;
-            while let Ok(env) = self.after_micro_rx.try_recv() {
-                Self::dispatch(&mut self.handlers, env);
-                after_micro_fired = true;
-            }
-            if after_micro_fired {
-                self.drain_jobs();
-                continue;
-            }
+            let mut progressed = false;
 
-            // ── 2. Raf：全部 drain，对应 requestAnimationFrame ───────────
-            let mut raf_fired = false;
-            while let Ok(env) = self.raf_rx.try_recv() {
-                Self::dispatch(&mut self.handlers, env);
-                raf_fired = true;
-            }
-            if raf_fired {
-                self.drain_jobs();
-                continue;
-            }
-
-            // ── 3. Macro（Idle 未饥饿时优先）────────────────────────────
-            const MAX_IDLE_SKIPS: u32 = 100;
-            let idle_starved = self.idle_skipped_count >= MAX_IDLE_SKIPS;
-
-            if !idle_starved {
-                if let Ok(env) = self.macro_rx.try_recv() {
-                    if self.starvation_threshold > Duration::ZERO
-                        && env.created_at.elapsed() < self.starvation_threshold
-                    {
-                        tokio::task::yield_now().await;
-                    }
+            // ── 1. RAF：每帧由 RenderScheduler 推送批次，保证快照语义 ───
+            while let Ok(raf_batch) = self.raf_batch_rx.try_recv() {
+                for env in raf_batch {
                     Self::dispatch(&mut self.handlers, env);
-                    self.idle_skipped_count += 1;
                     self.drain_jobs();
-                    continue;
                 }
+                progressed = true;
             }
 
-            // ── 3. Idle：高优全空，或饥饿保护触发 ───────────────────────
-            if let Ok(env) = self.idle_rx.try_recv() {
+            // ── 2. 填充 idle peek buffer ─────────────────────────────────
+            if self.idle_peeked.is_none() {
+                self.idle_peeked = self.idle_rx.try_recv().ok();
+            }
+
+            let idle_timed_out = self.idle_peeked
+                .as_ref()
+                .map(|env| env.queued_at.elapsed() > self.idle_promote_timeout)
+                .unwrap_or(false);
+
+            if idle_timed_out {
+                // ── 3a. Idle 超时：强制执行 ──────────────────────────────
+                let env = self.idle_peeked.take().unwrap();
                 Self::dispatch(&mut self.handlers, env);
-                self.idle_skipped_count = 0;
                 self.drain_jobs();
+                progressed = true;
+            } else if let Ok(env) = self.macro_rx.try_recv() {
+                // ── 3b. Macro：一个 ──────────────────────────────────────
+                Self::dispatch(&mut self.handlers, env);
+                self.drain_jobs();
+                progressed = true;
+            } else if let Some(env) = self.idle_peeked.take() {
+                // ── 3c. Idle：macro 为空时正常执行 ───────────────────────
+                Self::dispatch(&mut self.handlers, env);
+                self.drain_jobs();
+                progressed = true;
+            }
+             // ── dispatch 后再 cleanup，保证已入队事件有机会执行 ─────────
+            while let Ok(id) = self.cleanup_rx.try_recv() {
+                self.handlers.try_remove(id);
+            }
+            if progressed {
                 continue;
             }
 
-            // 饥饿保护触发但无 Idle 任务，回落执行 Macro
-            if idle_starved {
-                if let Ok(env) = self.macro_rx.try_recv() {
-                    if self.starvation_threshold > Duration::ZERO
-                        && env.created_at.elapsed() < self.starvation_threshold
-                    {
-                        tokio::task::yield_now().await;
-                    }
-                    Self::dispatch(&mut self.handlers, env);
-                    self.idle_skipped_count = 0;
-                    self.drain_jobs();
-                    continue;
-                }
-            }
-
-            // ── 4. 全空：检查自然退出 ────────────────────────────────────
-            // handlers 为空意味着所有 EventSender 已 drop，不会再有新事件
-            if self.handlers.is_empty() {
+            // ── 4. 全空：handlers 为空且队列无待处理事件时自然退出 ───────
+            if self.handlers.is_empty() && !self.has_pending_events() {
                 println!("🏁 [EventLoop] 所有任务完成，自动退出。");
                 break;
             }
 
-            // ── 5. 等待任意 channel 有数据或退出信号 ─────────────────────
+            // ── 5. 进入等待前再扫一次，避免 send 与 await 之间的窗口期 ──
+            if self.has_pending_events() {
+                continue;
+            }
+
+            // ── 6. 等待新事件或退出信号（不消费消息）────────────────────
             tokio::select! {
                 biased;
                 _ = self.cancel_token.cancelled() => break,
-                Some(_) = self.after_micro_rx.recv() => {},
-                Some(_) = self.raf_rx.recv() => {},
-                Some(_) = self.macro_rx.recv() => {},
-                Some(_) = self.idle_rx.recv() => {},
+                _ = self.notify.notified() => {},
             }
         }
         Ok(())
+    }
+
+    fn has_pending_events(&self) -> bool {
+        !self.raf_batch_rx.is_empty()
+            || !self.macro_rx.is_empty()
+            || self.idle_peeked.is_some()
+            || !self.idle_rx.is_empty()
     }
 
     /// 循环执行所有待处理的 JS jobs（microtask checkpoint）。
@@ -285,14 +275,13 @@ impl EventLoop {
     }
 
     fn dispatch(
-        handlers: &mut HashMap<HandlerId, Box<dyn FnMut(&dyn Any)>>,
+        handlers: &mut Slab<Box<dyn FnMut(&dyn Any)>>,
         env: EventEnvelope,
     ) {
-        if let Some(handler) = handlers.get_mut(&env.handler_id) {
+        if let Some(handler) = handlers.get_mut(env.handler_id) {
             handler(env.payload.as_ref());
         }
     }
-    
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -304,32 +293,33 @@ impl EventLoop {
 /// 只暴露注册能力，Extension 无需感知完整的 [`EventLoop`] 接口。
 #[derive(Clone, JsLifetime)]
 pub struct EventPortRegistrar {
-    event_loop:Rc<RefCell<EventLoop>>,
+    event_loop: Rc<RefCell<EventLoop>>,
     context: Context,
 }
-
-
 
 impl EventPortRegistrar {
     pub fn new(event_loop: Rc<RefCell<EventLoop>>, context: Context) -> Self {
         Self { event_loop, context }
     }
-    pub fn register_js_event_port<F>(&mut self, task_type: TaskType, mut handler: F) -> EventSender
+
+    pub fn from_ctx<'c, 'js>(ctx: &'c Ctx<'js>) -> Option<UserDataGuard<'c, EventPortRegistrar>> {
+        ctx.userdata::<EventPortRegistrar>()
+    }
+
+    pub fn register_js_event_port<F>(&mut self, queue: QueueKind, mut handler: F) -> EventSender
     where
         F: FnMut(Ctx<'_>, &dyn Any) -> rquickjs::Result<()> + 'static,
     {
         let context = self.context.clone();
-        self.event_loop.borrow_mut().register_event_port(task_type, move |payload: &dyn Any| {
+        self.event_loop.borrow_mut().register_event_port(queue, move |payload: &dyn Any| {
             let _ = context.with(|ctx| handler(ctx, payload));
         })
     }
 
-    pub fn register_event_port<F>(&mut self, task_type: TaskType, handler: F) -> EventSender
+    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventSender
     where
         F: FnMut(&dyn Any) + 'static,
     {
-        // 运行时借用检查，获取可变引用
-        self.event_loop.borrow_mut().register_event_port(task_type, handler)
-
+        self.event_loop.borrow_mut().register_event_port(queue, handler)
     }
 }

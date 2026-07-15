@@ -9,7 +9,7 @@ use rquickjs::{
 };
 use tokio::sync::oneshot;
 
-use crate::event_loop::event_loop_impl::{EventPortRegistrar, TaskType};
+use crate::event_loop::event_loop_impl::{EventPortRegistrar, QueueKind};
 use crate::extension::{Extension, ExtensionEnv};
 
 // ──────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ fn spawn_timeout<'js>(
     let ctx = func.ctx().clone();
     let persistent: Persistent<Function<'static>> = Persistent::save(&ctx, func);
     let mut registrar = registrar.clone();
-    let sender = registrar.register_js_event_port(TaskType::Macro, move |ctx, _payload| {
+    let sender = registrar.register_js_event_port(QueueKind::Macro, move |ctx, _payload| {
         let persistent = persistent.clone();
         let f = persistent.restore(&ctx)?;
         f.call::<_, Value>(())?;
@@ -99,7 +99,7 @@ fn spawn_interval<'js>(
     let ctx = func.ctx().clone();
     let persistent: Persistent<Function<'static>> = Persistent::save(&ctx, func);
     let mut registrar = registrar.clone();
-    let sender = registrar.register_js_event_port(TaskType::Macro, move |ctx, _payload| {
+    let sender = registrar.register_js_event_port(QueueKind::Macro, move |ctx, _payload| {
         let persistent = persistent.clone();
         let f = persistent.restore(&ctx)?;
         f.call::<_, Value>(())?;
@@ -141,7 +141,7 @@ impl ModuleDef for TimerModule {
             .expect("TimerState not registered")
             .deref()
             .clone();
-        let registrar: EventPortRegistrar = ExtensionEnv::event_port_registrar(ctx)
+        let registrar: EventPortRegistrar = EventPortRegistrar::from_ctx(ctx)
             .expect("EventPortRegistrar not registered")
             .deref()
             .clone();

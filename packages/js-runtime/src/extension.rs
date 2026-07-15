@@ -3,19 +3,11 @@ use std::any::Any;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    event_loop::event_loop_impl::{EventPortRegistrar, EventSender, TaskType},
+    event_loop::event_loop_impl::{EventPortRegistrar, EventSender, QueueKind},
     storage::RoomMemoryCenter,
 };
 
-/// 跨线程/跨 `'js` 持有 [`Context`] 的句柄，供事件端口 handler 在稍后回调 JS 时使用。
-///
-/// `Context` 本身可 `Clone`（内部引用计数），只需为其提供 `JsLifetime` 才能存入 userdata。
-#[derive(Clone)]
-pub struct ContextHandle(pub Context);
 
-unsafe impl<'js> JsLifetime<'js> for ContextHandle {
-    type Changed<'to> = ContextHandle;
-}
 
 // ── Extension 级环境 ───────────────────────────────────────────────────────────
 
@@ -72,15 +64,6 @@ impl<'a> ExtensionEnv<'a> {
         ctx.userdata::<T>()
     }
 
-    pub fn event_port_registrar<'c, 'js>(ctx: &'c Ctx<'js>) -> Option<UserDataGuard<'c, EventPortRegistrar>> {
-        ctx.userdata::<EventPortRegistrar>()
-    }
-
-    /// 依据当前 `ctx` 从 userdata 中取出 [`ContextHandle`]，返回可跨线程/跨 `'js` 持有的 `Context` 克隆。
-    pub fn get_context<'js>(ctx: &Ctx<'js>) -> Option<Context> {
-        ctx.userdata::<ContextHandle>().map(|guard| guard.0.clone())
-    }
-
     /// 注册原生 Rust 模块，specifier 必须在 `native_module_specifiers()` 中声明。
     pub fn declare_native_module<M: rquickjs::module::ModuleDef>(&self, specifier: &'static str) {
         assert!(
@@ -95,11 +78,11 @@ impl<'a> ExtensionEnv<'a> {
     }
 
     /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventSender`]。
-    pub fn register_event_port<F>(&mut self, task_type: TaskType, handler: F) -> EventSender
+    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventSender
     where
         F: FnMut(&dyn Any) + 'static,
     {
-        self.ports.register_event_port(task_type, handler)
+        self.ports.register_event_port(queue, handler)
     }
 }
 
