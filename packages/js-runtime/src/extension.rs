@@ -3,8 +3,7 @@ use std::any::Any;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    event_loop::event_loop_impl::{EventPortRegistrar, EventSender, QueueKind},
-    storage::RoomMemoryCenter,
+    event_loop::event_loop_impl::{EventPortRegistrar, EventPort, QueueKind},
 };
 
 
@@ -77,8 +76,8 @@ impl<'a> ExtensionEnv<'a> {
         });
     }
 
-    /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventSender`]。
-    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventSender
+    /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventPort`]。
+    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventPort
     where
         F: FnMut(&dyn Any) + 'static,
     {

@@ -37,40 +37,40 @@ pub type HandlerId = usize;
 /// 只携带 payload 和 handler_id；handler 本体留在 EventLoop 线程，
 /// 因此 handler 可持有 `Rc`、`RefCell` 等 `!Send` 数据。
 ///
-/// `_keep_alive` 持有 `EventSenderGuard` 的引用，保证 envelope 还在 channel 时
+/// `_keep_alive` 持有 `EventPortGuard` 的引用，保证 envelope 还在 channel 时
 /// handler 不会被提前清理。
 pub struct EventEnvelope {
     pub queued_at: Instant,
     pub handler_id: HandlerId,
     pub payload: Box<dyn Any + Send>,
-    _keep_alive: Arc<EventSenderGuard>,
+    _keep_alive: Arc<EventPortGuard>,
 }
 
 // 只负责生命周期守卫，不含 tx，避免 EventEnvelope → Arc<Guard> → Sender<EventEnvelope> 的循环引用。
 // 最后一个 clone drop 时自动通知 EventLoop 清理 handler。
-struct EventSenderGuard {
+struct EventPortGuard {
     handler_id: HandlerId,
     cleanup_tx: mpsc::UnboundedSender<HandlerId>,
     notify: Arc<Notify>,
 }
 
-impl Drop for EventSenderGuard {
+impl Drop for EventPortGuard {
     fn drop(&mut self) {
         let _ = self.cleanup_tx.send(self.handler_id);
         self.notify.notify_one();
     }
 }
 
-/// 轻量的跨线程事件发射端，可自由 Clone 后在任意线程调用 [`EventSender::send`]。
+/// 轻量的跨线程事件注入端，可自由 Clone 后在任意线程调用 [`EventPort::send`]。
 ///
 /// 所有 clone 全部 drop 后，对应的 handler 会从 EventLoop 中自动移除。
 #[derive(Clone)]
-pub struct EventSender {
+pub struct EventPort {
     tx: mpsc::UnboundedSender<EventEnvelope>,
-    guard: Arc<EventSenderGuard>,
+    guard: Arc<EventPortGuard>,
 }
 
-impl EventSender {
+impl EventPort {
     pub fn send(&self, payload: impl Any + Send) {
         let _ = self.tx.send(EventEnvelope {
             queued_at: Instant::now(),
@@ -94,7 +94,7 @@ impl EventSender {
 ///
 /// 退出策略：
 /// - 主动退出：`cancel_token` 被取消时立即中止；
-/// - 自然退出：所有 EventSender 全部 drop（handlers 为空）且无待处理事件时自动退出。
+/// - 自然退出：所有 EventPort 全部 drop（handlers 为空）且无待处理事件时自动退出。
 pub struct EventLoop {
     runtime: Runtime,
     cancel_token: CancellationToken,
@@ -151,11 +151,11 @@ impl EventLoop {
         }
     }
 
-    /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventSender`]。
+    /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventPort`]。
     ///
     /// `handler` 不要求 `Send`，可持有 `Rc`、`RefCell` 等单线程数据。
-    /// 所有 [`EventSender`] clone 全部 drop 后，handler 自动从注册表移除。
-    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventSender
+    /// 所有 [`EventPort`] clone 全部 drop 后，handler 自动从注册表移除。
+    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventPort
     where
         F: FnMut(&dyn Any) + 'static,
     {
@@ -165,9 +165,9 @@ impl EventLoop {
             QueueKind::Macro => self.macro_tx.clone(),
             QueueKind::Idle  => self.idle_tx.clone(),
         };
-        EventSender {
+        EventPort {
             tx,
-            guard: Arc::new(EventSenderGuard {
+            guard: Arc::new(EventPortGuard {
                 handler_id: id,
                 cleanup_tx: self.cleanup_tx.clone(),
                 notify: self.notify.clone(),
@@ -304,7 +304,7 @@ impl EventPortRegistrar {
         ctx.userdata::<EventPortRegistrar>()
     }
 
-    pub fn register_js_event_port<F>(&mut self, queue: QueueKind, mut handler: F) -> EventSender
+    pub fn register_js_event_port<F>(&mut self, queue: QueueKind, mut handler: F) -> EventPort
     where
         F: FnMut(Ctx<'_>, &dyn Any) -> rquickjs::Result<()> + 'static,
     {
@@ -314,7 +314,7 @@ impl EventPortRegistrar {
         })
     }
 
-    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventSender
+    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventPort
     where
         F: FnMut(&dyn Any) + 'static,
     {
