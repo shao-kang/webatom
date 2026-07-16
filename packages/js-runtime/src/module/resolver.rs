@@ -10,7 +10,7 @@ use rquickjs::loader::{ImportAttributes, Resolver};
 /// - `EsmResolver` 每次 resolve 时 read()
 /// - Extension（如 DOM importmap）在运行时 write().insert()
 #[derive(Clone, Default)]
-pub struct ImportMap(pub Arc<RwLock<HashMap<String, String>>>);
+pub struct ImportMap( Arc<RwLock<HashMap<String, String>>>);
 
 impl ImportMap {
     pub fn new() -> Self {
@@ -22,13 +22,36 @@ impl ImportMap {
     }
 
     /// 插入单条映射（bare specifier → URL/path）。
+    /// 若 key 已存在则覆盖，并通过 tracing 记录重复警告。
     pub fn insert(&self, specifier: impl Into<String>, target: impl Into<String>) {
-        self.0.write().unwrap().insert(specifier.into(), target.into());
+        let specifier = specifier.into();
+        let target = target.into();
+        let mut map = self.0.write().unwrap();
+        if let Some(existing) = map.get(&specifier) {
+            tracing::error!(
+                specifier,
+                old = existing.as_str(),
+                new = target.as_str(),
+                "import map: duplicate specifier, overwriting"
+            );
+        }
+        map.insert(specifier, target);
     }
 
-    /// 批量合并，重复 key 以新值覆盖。
+    /// 批量合并，重复 key 以新值覆盖，并通过 tracing 记录每条重复警告。
     pub fn extend(&self, entries: HashMap<String, String>) {
-        self.0.write().unwrap().extend(entries);
+        let mut map = self.0.write().unwrap();
+        for (k, v) in entries {
+            if let Some(existing) = map.get(&k) {
+                tracing::error!(
+                    specifier = k.as_str(),
+                    old = existing.as_str(),
+                    new = v.as_str(),
+                    "import map: duplicate specifier, overwriting"
+                );
+            }
+            map.insert(k, v);
+        }
     }
 
     pub(crate) fn resolve(&self, name: &str) -> Option<String> {
@@ -65,6 +88,11 @@ impl Resolver for EsmResolver {
         name: &str,
         _attr: Option<ImportAttributes<'js>>,
     ) -> Result<String> {
+        // import map 优先查找（覆盖所有形式的 key：bare specifier、URL、相对路径）
+        if let Some(mapped) = self.import_map.resolve(name) {
+            return self.resolve(ctx, base, &mapped, None);
+        }
+
         // 自描述 URL scheme — 直接透传
         if name.starts_with("data:")
             || name.starts_with("http://")
@@ -102,15 +130,12 @@ impl Resolver for EsmResolver {
             return Ok(name.to_string());
         }
 
-        // bare specifier → 查 import map（运行时动态）
-        match self.import_map.resolve(name) {
-            Some(mapped) => self.resolve(ctx, base, &mapped, None),
-            None => Err(Error::new_resolving_message(
-                base,
-                name,
-                format!("bare import '{}' not found in import map", name),
-            )),
-        }
+        // bare specifier 且不在 import map 中 → 报错
+        Err(Error::new_resolving_message(
+            base,
+            name,
+            format!("bare import '{}' not found in import map", name),
+        ))
     }
 }
 

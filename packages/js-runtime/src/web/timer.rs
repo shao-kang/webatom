@@ -203,12 +203,12 @@ impl Extension for TimerExtension {
 
     fn native_setup(&self, env: &mut ExtensionEnv<'_>) {
         env.set_state(TimerState::new());
-        env.declare_native_module::<TimerModule>("@webatom/timer");
+        env.declare_native_module::<TimerModule>("webatom/timer");
     }
 
     fn global_js(&self) -> Option<&'static str> {
         Some(concat!(
-            "import { setTimeout, clearTimeout, setInterval, clearInterval } from '@webatom/timer';\n",
+            "import { setTimeout, clearTimeout, setInterval, clearInterval } from 'webatom/timer';\n",
             "globalThis.setTimeout = setTimeout;\n",
             "globalThis.clearTimeout = clearTimeout;\n",
             "globalThis.setInterval = setInterval;\n",

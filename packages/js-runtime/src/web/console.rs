@@ -78,12 +78,12 @@ impl Extension for ConsoleExtension {
     }
 
     fn native_setup(&self, env: &mut ExtensionEnv) {
-        env.declare_native_module::<ConsoleModule>("@webatom/console");
+        env.declare_native_module::<ConsoleModule>("webatom/console");
     }
 
     fn global_js(&self) -> Option<&'static str> {
         Some(concat!(
-            "import { log, info, warn, error, debug } from '@webatom/console';\n",
+            "import { log, info, warn, error, debug } from 'webatom/console';\n",
             "const _j = (...a) => a.map(String).join(' ');\n",
             "globalThis.console = {\n",
             "  log:   (...a) => log(_j(...a)),\n",
