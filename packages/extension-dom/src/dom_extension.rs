@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use js_runtime::{ Extension};
+use js_runtime::{Extension, extension::ExtensionEnv};
 use rquickjs::{
     module::{Declarations, Exports, ModuleDef},
     Class, Ctx, Result,
@@ -36,10 +36,9 @@ impl ModuleDef for DomModule {
     }
 }
 
-// ── DomExtensionState（Context userdata）──────────────────────────────────────────────
+// ── DomExtensionState（Context userdata）──────────────────────────────────────
 
 /// DOM 扩展运行时状态，存入 context userdata，DocumentHandle 创建时读取。
-/// Clone 后可安全移入 MacroTask 闭包（Arc<JsSide> 为 Send）。
 #[derive(rquickjs::JsLifetime, Clone)]
 pub struct DomExtensionState {
     pub channel: Arc<JsSide>,
@@ -56,22 +55,18 @@ impl DomExtensionState {
         self
     }
 
-    /// 入口页面的基础 URL（用于相对路径解析）
     pub fn base_url(&self) -> Option<&str> {
         self.entry.as_ref().map(|e| e.base_url.as_str())
     }
 
-    /// 入口页面的原始 HTML 内容
     pub fn html_content(&self) -> Option<&str> {
         self.entry.as_ref().map(|e| e.content.as_str())
     }
 
-    /// 将增量 patch 发送到 Blitz 渲染线程（fire & forget，自动唤醒 Blitz）
     pub(crate) fn send_patch(&self, ops: Vec<DomOp>) {
         self.channel.send_dom(DomMsg::Patch(ops));
     }
 
-    /// 发送首帧全量快照（自动唤醒 Blitz）
     pub(crate) fn send_full(&self, snapshot: webatom_blitz_msg::snapshot::DomSnapshot) {
         self.channel.send_dom(DomMsg::Full(snapshot));
     }
@@ -106,20 +101,15 @@ impl Extension for DomExtension {
         &["webatom_ext_native:dom"]
     }
 
-    fn native_setup(&self, ctx: &Ctx<'_>, host: &HostBridge) -> rquickjs::Result<()> {
-        rquickjs::Module::declare_def::<DomModule, _>(ctx.clone(), "webatom_ext_native:dom")?;
+    fn native_setup(&self, env: &mut ExtensionEnv<'_>) {
+        env.declare_native_module::<DomModule>("webatom_ext_native:dom");
         if let Some(state) = &self.state {
-            ctx.store_userdata(state.clone())?;
+            env.set_state(state.clone());
+            env.set_state(ImportMapState::new());
+            crate::bridge::init_html_entry(env, state);
+        } else {
+            env.set_state(ImportMapState::new());
         }
-        ctx.store_userdata(host.clone())?;
-        // ImportMapState：初始为空，<script type="importmap"> 解析后更新
-        ctx.store_userdata(ImportMapState::new())?;
-
-        // HTML 入口：发送首帧快照 + 调度脚本（在 js_glue 运行前调用，脚本作为宏任务延迟）
-        if let Some(state) = &self.state {
-            crate::bridge::init_html_entry(ctx, host, state)?;
-        }
-        Ok(())
     }
 
     fn js_modules(&self) -> &[(&'static str, &'static str)] {

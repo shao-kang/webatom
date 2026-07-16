@@ -7,6 +7,7 @@ use rquickjs::{Context, Runtime, FromJs};
 use crate::extension::{ExtensionEnv, ExtensionSet, Extension};
 use crate::event_loop::{EventLoop, RenderScheduler};
 use crate::event_loop::event_loop_impl::EventPortRegistrar;
+use crate::module::{ImportMap, setup_module_system};
 
 use super::JsRuntimeBuilder;
 
@@ -21,9 +22,13 @@ impl JsRuntime {
         extensions: ExtensionSet,
         cancel_token: CancellationToken,
         render_scheduler: Box<dyn RenderScheduler>,
+        import_map: ImportMap,
     ) -> rquickjs::Result<Self> {
         let runtime = Runtime::new()?;
         let extensions = topological_sort(extensions);
+
+        // 安装模块解析器，resolver 与 import_map 共享同一 Arc
+        setup_module_system(&runtime, import_map.clone());
 
         let event_loop = EventLoop::new(runtime.clone(), cancel_token.clone(), render_scheduler);
         let event_loop_rc = Rc::new(RefCell::new(event_loop));
@@ -50,6 +55,7 @@ impl JsRuntime {
                 event_port_registrar.clone(),
                 ext.name(),
                 ext.native_module_specifiers(),
+                import_map.clone(),
             );
             ext.native_setup(&mut env);
         }

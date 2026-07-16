@@ -4,19 +4,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     event_loop::event_loop_impl::{EventPortRegistrar, EventPort, QueueKind},
+    module::ImportMap,
 };
-
-
 
 // ── Extension 级环境 ───────────────────────────────────────────────────────────
 
 /// `setup` 的调用环境，每个 Extension 安装时独立创建。
-///
-/// - `cancel`：感知运行时生命周期的取消令牌
-/// - `register_event_port()`：注册事件端口
-/// - `declare_native_module::<M>(specifier)`：注册 Rust 原生模块（只允许 `module_specifiers()` 中声明的 specifier）
-///
-/// 全局变量注入通过 `js_source()` 返回 ESM 代码实现，不在 Rust 侧直接操作 `Context`。
 #[derive()]
 pub struct ExtensionEnv<'a> {
     context: &'a Context,
@@ -24,6 +17,8 @@ pub struct ExtensionEnv<'a> {
     ports: EventPortRegistrar,
     plugin_name: &'static str,
     allowed_specifiers: &'static [&'static str],
+    /// 与 EsmResolver 共享的 import map，Extension 可在 native_setup 中动态写入。
+    pub import_map: ImportMap,
 }
 
 impl<'a> ExtensionEnv<'a> {
@@ -33,6 +28,7 @@ impl<'a> ExtensionEnv<'a> {
         ports: EventPortRegistrar,
         plugin_name: &'static str,
         allowed_specifiers: &'static [&'static str],
+        import_map: ImportMap,
     ) -> Self {
         Self {
             context,
@@ -40,10 +36,11 @@ impl<'a> ExtensionEnv<'a> {
             ports,
             plugin_name,
             allowed_specifiers,
+            import_map,
         }
     }
 
-    /// 返回当前 `Context` 的克隆，供需要在异步任务/事件端口 handler 中稍后调用 JS 的场景持有。
+    /// 返回当前 `Context` 的克隆。
     pub fn context(&self) -> Context {
         self.context.clone()
     }
@@ -56,6 +53,7 @@ impl<'a> ExtensionEnv<'a> {
             ctx.store_userdata(data).unwrap();
         });
     }
+
     pub fn get_state<'c, 'js, T>(ctx: &'c Ctx<'js>) -> Option<UserDataGuard<'c, T>>
     where
         T: 'static + JsLifetime<'js>,
@@ -83,17 +81,17 @@ impl<'a> ExtensionEnv<'a> {
     {
         self.ports.register_event_port(queue, handler)
     }
+
+    pub fn register_js_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventPort
+    where
+        F: FnMut(Ctx<'_>, &dyn Any) -> rquickjs::Result<()> + 'static,
+    {
+        self.ports.register_js_event_port(queue, handler)
+    }
 }
 
 // ── Extension trait ────────────────────────────────────────────────────────────
 
-/// 向运行时注入原生能力的插件接口。
-///
-/// 每个 Extension 按职责实现以下方法：
-///   - `setup(env)`：注册事件端口；调用 `env.declare_native_module` 注册 Rust 原生模块
-///   - `native_module_specifiers()`：声明 Rust 原生模块的 specifier（供 assert 校验）
-///   - `js_modules()`：用户可 `import` 的 JS 模块列表 `(specifier, ESM source)`
-///   - `global_js()`：启动时绑定到 `globalThis` 的 JS 代码（以 ESM 执行，可 `import` 原生模块）
 pub trait Extension: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 

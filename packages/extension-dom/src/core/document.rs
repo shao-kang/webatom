@@ -7,12 +7,14 @@ use super::parse_html;
 use super::{Attributes, ElementData, Node, TextNodeData};
 use super::node::NodeData;
 
+#[derive(Clone)]
 pub enum ScriptKind {
     Classic,
     Module,
     ImportMap,
 }
 
+#[derive( Clone)]
 pub struct ScriptInfo {
     pub kind: ScriptKind,
     /// `src` 属性值（外部脚本）
