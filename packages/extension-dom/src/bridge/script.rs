@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use rquickjs::{Ctx, Module, Object, Result, Value};
 use js_runtime::event_loop::event_loop_impl::{EventPortRegistrar, QueueKind};
@@ -86,23 +87,32 @@ fn exec_module<'js>(
         let full_url = resolve_url(&resolved, base.as_deref());
 
         if full_url.starts_with("http://") || full_url.starts_with("https://") {
-            // HTTP 脚本：异步 fetch，完成后通过 EventPort 推入宏任务
+            // HTTP 脚本：fetch 在 tokio 任务里跑，拿到 code 后通过 EventPort 推入宏任务
             if let Some(registrar) = registrar {
                 let mut registrar = registrar.clone();
+                // code 通过 Arc<Mutex<Option>> 共享给 handler（JS 线程）和 tokio task（Send）
+                let code_slot: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+                let code_slot_tx = Arc::clone(&code_slot);
+                let specifier = full_url.clone();
+                let port = registrar.register_js_event_port(QueueKind::Macro, move |ctx, _| {
+                    use rquickjs::CatchResultExt;
+                    let code = match code_slot.lock().unwrap().take() {
+                        Some(c) => c,
+                        None => return Ok(()),
+                    };
+                    Module::evaluate(ctx.clone(), specifier.as_str(), code)
+                        .catch(&ctx)
+                        .map_err(|e| { tracing::error!(module = specifier.as_str(), "module eval error: {e}"); e.throw(&ctx) })?
+                        .finish::<()>()
+                        .catch(&ctx)
+                        .map_err(|e| { tracing::error!(module = specifier.as_str(), "module finish error: {e}"); e.throw(&ctx) })
+                });
+                // 只有 port（Send）和 code_slot_tx（Send）进入 async block
                 tokio::task::spawn(async move {
                     match reqwest::get(&full_url).await {
                         Ok(resp) => match resp.text().await {
                             Ok(code) => {
-                                let specifier = full_url.clone();
-                                let port = registrar.register_js_event_port(QueueKind::Macro, move |ctx, _| {
-                                    use rquickjs::CatchResultExt;
-                                    Module::evaluate(ctx.clone(), specifier.as_str(), code.clone())
-                                        .catch(&ctx)
-                                        .map_err(|e| { tracing::error!(module = specifier.as_str(), "module eval error: {e}"); e.throw(&ctx) })?
-                                        .finish::<()>()
-                                        .catch(&ctx)
-                                        .map_err(|e| { tracing::error!(module = specifier.as_str(), "module finish error: {e}"); e.throw(&ctx) })
-                                });
+                                *code_slot_tx.lock().unwrap() = Some(code);
                                 port.send(());
                             }
                             Err(e) => tracing::warn!(url = full_url.as_str(), error = %e, "HTTP module fetch body failed"),

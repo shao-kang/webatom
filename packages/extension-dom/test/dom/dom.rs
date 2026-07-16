@@ -6,14 +6,6 @@ async fn build() -> JsRuntime {
     match JsRuntime::builder()
         .with_extension(DomExtension::new())
         .build()
-        .await {
-            Ok(rt) => rt,
-            Err(e) => {
-                eprintln!("Failed to build runtime: {:?}", e);
-                // 尝试获取更底层的错误信息
-                panic!("Runtime build failed: {:?}", e);
-            }
-        }
 }
 async fn drop_runtime(rt: &mut JsRuntime) {
    let _result = rt.eval::<()>("globalThis.document = undefined").await;

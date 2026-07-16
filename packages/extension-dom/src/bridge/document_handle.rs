@@ -3,7 +3,8 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use js_runtime::event_loop::{HostBridge, KeepaliveGuard};
+use js_runtime::event_loop::event_loop_impl::{EventPort, EventPortRegistrar, QueueKind};
+use js_runtime::extension::ExtensionEnv;
 use rquickjs::{Class, Ctx, Function, Persistent, Result, Value};
 use rquickjs::class::Trace;
 use webatom_blitz_msg::patch::DomOp;
@@ -11,37 +12,27 @@ use webatom_blitz_msg::patch::DomOp;
 use crate::dom_extension::DomExtensionState;
 use super::document_inner::{DocumentInner, PatchBuffer};
 use super::node_handle::NodeHandle;
-use super::send_persistent::SendPersistent;
+
 use super::script::execute_script;
-
-/// Stores the JS event callback as context userdata so it is dropped with the context
-/// (before JS_FreeRuntime), rather than in an Arc shared with spawn_blocking.
-/// This prevents Persistent<Function> from outliving the QuickJS runtime.
-struct EventCallbackStore(Mutex<Option<SendPersistent<Function<'static>>>>);
-
-unsafe impl<'js> rquickjs::JsLifetime<'js> for EventCallbackStore {
-    type Changed<'to> = Self;
-}
 
 #[derive(Trace)]
 #[rquickjs::class(rename = "DocumentHandle")]
 pub struct DocumentHandle {
     #[qjs(skip_trace)]
     pub(crate) inner: Rc<RefCell<DocumentInner>>,
+    /// 持久 flush 端口，首次 schedule_flush 时注册，之后复用。
     #[qjs(skip_trace)]
-    #[allow(dead_code)] // RAII guard: held to keep the event loop alive while this document exists
-    keepalive: Option<KeepaliveGuard>,
+    flush_port: Option<EventPort>,
+    /// true 表示已向 flush_port send(())，handler 还未执行（防止同步代码路径重复 send）。
     #[qjs(skip_trace)]
     flush_pending: Arc<AtomicBool>,
-    #[qjs(skip_trace)]
-    host: Option<HostBridge>,
     #[qjs(skip_trace)]
     patch_buffer: Arc<Mutex<PatchBuffer>>,
     #[qjs(skip_trace)]
     dom_state: Option<DomExtensionState>,
-    /// Set to true once the spawn_blocking loop has been started; prevents duplicate loops.
+    /// 每次 on_event 替换；旧端口 drop → handler 自动注销。
     #[qjs(skip_trace)]
-    event_loop_running: Arc<AtomicBool>,
+    event_port: Option<EventPort>,
 }
 
 unsafe impl<'js> rquickjs::JsLifetime<'js> for DocumentHandle {
@@ -49,45 +40,56 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for DocumentHandle {
 }
 
 impl DocumentHandle {
-    fn schedule_flush(&self) {
-        let Some(host) = &self.host else { return };
-        if self.flush_pending.swap(true, Ordering::AcqRel) { return; }
-        let pending = Arc::clone(&self.flush_pending);
-        let patch_buffer = Arc::clone(&self.patch_buffer);
-        let dom_state = self.dom_state.clone();
-        let _ = host.io.task_tx.try_send(Box::new(move |_ctx| {
-            pending.store(false, Ordering::Release);
-            let ops = patch_buffer.lock().unwrap().drain_ops();
-            if !ops.is_empty() {
-                if let Some(state) = &dom_state {
-                    state.send_patch(ops);
+    fn schedule_flush_with_ctx(&mut self, ctx: &Ctx<'_>) {
+        // 若已有 pending send 尚未被 handler 消费，不重复 send
+        if self.flush_pending.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        if self.flush_port.is_none() {
+            let Some(mut registrar) = EventPortRegistrar::from_ctx(ctx).map(|g| (*g).clone()) else {
+                self.flush_pending.store(false, Ordering::Release);
+                return;
+            };
+            let patch_buffer = Arc::clone(&self.patch_buffer);
+            let dom_state = self.dom_state.clone();
+            let pending = Arc::clone(&self.flush_pending);
+            let port = registrar.register_js_event_port(QueueKind::Macro, move |_ctx, _| {
+                // 先重置 pending，再 drain，使后续同步 DOM 变更可再次触发 flush
+                pending.store(false, Ordering::Release);
+                let ops = patch_buffer.lock().unwrap().drain_ops();
+                if !ops.is_empty() {
+                    if let Some(state) = &dom_state {
+                        state.send_patch(ops);
+                    }
                 }
-            }
-            Ok(())
-        }));
+                Ok(())
+            });
+            self.flush_port = Some(port);
+        }
+
+        if let Some(port) = &self.flush_port {
+            port.send(());
+        }
     }
 }
 
 #[rquickjs::methods]
 impl DocumentHandle {
     #[qjs(constructor)]
-    pub fn js_new<'js>(_ctx: Ctx<'js>) -> Self {
+    pub fn js_new<'js>(ctx: Ctx<'js>) -> Self {
         tracing::info!("new handle document");
-        let host = _ctx.userdata::<HostBridge>()
-            .expect("HostBridge userdata not registered")
-            .clone();
-        let guard = host.runtime.keepalive.acquire();
-        let dom_state = _ctx.userdata::<DomExtensionState>().map(|g| (*g).clone());
-        let html = dom_state.as_ref().and_then(|s| s.html_content()).unwrap_or("");
-        let inner = Rc::new(RefCell::new(DocumentInner::new_html(html)));
+        let dom_state_guard = ExtensionEnv::get_state::<DomExtensionState>(&ctx);
+        let html = dom_state_guard.as_deref().and_then(|s| s.html_content()).unwrap_or("").to_owned();
+        let dom_state: Option<DomExtensionState> = dom_state_guard.map(|g| (*g).clone());
+        let inner = Rc::new(RefCell::new(DocumentInner::new_html(&html)));
         Self {
             inner,
-            keepalive: guard,
+            flush_port: None,
             flush_pending: Arc::new(AtomicBool::new(false)),
-            host: Some(host),
             patch_buffer: Arc::new(Mutex::new(PatchBuffer::new())),
             dom_state,
-            event_loop_running: Arc::new(AtomicBool::new(false)),
+            event_port: None,
         }
     }
 
@@ -106,34 +108,34 @@ impl DocumentHandle {
     }
 
     #[qjs(rename = "createElement")]
-    pub fn create_element(&self, tag: String) -> Result<usize> {
+    pub fn create_element<'js>(&mut self, ctx: Ctx<'js>, tag: String) -> Result<usize> {
         let id = self.inner.borrow_mut().doc.create_element(&tag);
         if !tag.eq_ignore_ascii_case("script") {
             self.patch_buffer.lock().unwrap().push_structural(
                 DomOp::CreateElement { id, tag, attrs: vec![] }
             );
-            self.schedule_flush();
+            self.schedule_flush_with_ctx(&ctx);
         }
         Ok(id)
     }
 
     #[qjs(rename = "createTextNode")]
-    pub fn create_text_node(&self, content: String) -> Result<usize> {
+    pub fn create_text_node<'js>(&mut self, ctx: Ctx<'js>, content: String) -> Result<usize> {
         let id = self.inner.borrow_mut().doc.create_text_node(&content);
         self.patch_buffer.lock().unwrap().push_structural(
             DomOp::CreateText { id, content }
         );
-        self.schedule_flush();
+        self.schedule_flush_with_ctx(&ctx);
         Ok(id)
     }
 
     #[qjs(rename = "createComment")]
-    pub fn create_comment(&self, content: String) -> Result<usize> {
+    pub fn create_comment<'js>(&mut self, ctx: Ctx<'js>, content: String) -> Result<usize> {
         let id = self.inner.borrow_mut().doc.create_comment(&content);
         self.patch_buffer.lock().unwrap().push_structural(
             DomOp::CreateComment { id, content }
         );
-        self.schedule_flush();
+        self.schedule_flush_with_ctx(&ctx);
         Ok(id)
     }
 
@@ -168,7 +170,7 @@ impl DocumentHandle {
 
     #[qjs(rename = "appendChild")]
     pub fn append_child<'js>(
-        &self,
+        &mut self,
         ctx: Ctx<'js>,
         parent_id: usize,
         child_id: usize,
@@ -184,26 +186,27 @@ impl DocumentHandle {
                 DomOp::AppendChild { parent: parent_id, child: child_id }
             );
         }
+        let registrar = EventPortRegistrar::from_ctx(&ctx).map(|g| (*g).clone());
         if let Some(info) = script_info {
-            execute_script(&ctx, self.host.as_ref(), info, child_id)?;
+            execute_script(&ctx, registrar.as_ref(), info, child_id)?;
         }
-        self.schedule_flush();
+        self.schedule_flush_with_ctx(&ctx);
         Ok(())
     }
 
     #[qjs(rename = "removeChild")]
-    pub fn remove_child(&self, parent_id: usize, child_id: usize) -> Result<()> {
+    pub fn remove_child<'js>(&mut self, ctx: Ctx<'js>, parent_id: usize, child_id: usize) -> Result<()> {
         self.inner.borrow_mut().doc.remove_child(parent_id, child_id);
         self.patch_buffer.lock().unwrap().push_structural(
             DomOp::RemoveChild { parent: parent_id, child: child_id }
         );
-        self.schedule_flush();
+        self.schedule_flush_with_ctx(&ctx);
         Ok(())
     }
 
     #[qjs(rename = "insertBefore")]
     pub fn insert_before<'js>(
-        &self,
+        &mut self,
         ctx: Ctx<'js>,
         parent_id: usize,
         new_id: usize,
@@ -220,10 +223,11 @@ impl DocumentHandle {
                 DomOp::InsertBefore { parent: parent_id, child: new_id, before: before_id }
             );
         }
+        let registrar = EventPortRegistrar::from_ctx(&ctx).map(|g| (*g).clone());
         if let Some(info) = script_info {
-            execute_script(&ctx, self.host.as_ref(), info, new_id)?;
+            execute_script(&ctx, registrar.as_ref(), info, new_id)?;
         }
-        self.schedule_flush();
+        self.schedule_flush_with_ctx(&ctx);
         Ok(())
     }
 
@@ -280,13 +284,13 @@ impl DocumentHandle {
     }
 
     #[qjs(rename = "setNodeValue")]
-    pub fn set_node_value(&self, node_id: usize, value: Option<String>) -> Result<()> {
+    pub fn set_node_value<'js>(&mut self, ctx: Ctx<'js>, node_id: usize, value: Option<String>) -> Result<()> {
         let mut inner = self.inner.borrow_mut();
         inner.doc.set_node_value(node_id, value.as_deref().unwrap_or(""));
         let content = inner.doc.node_value(node_id).unwrap_or_default();
         drop(inner);
         self.patch_buffer.lock().unwrap().mark_text(node_id, content);
-        self.schedule_flush();
+        self.schedule_flush_with_ctx(&ctx);
         Ok(())
     }
 
@@ -301,7 +305,7 @@ impl DocumentHandle {
     }
 
     #[qjs(rename = "replaceChild")]
-    pub fn replace_child(&self, parent_id: usize, new_id: usize, old_id: usize) -> Result<()> {
+    pub fn replace_child<'js>(&mut self, ctx: Ctx<'js>, parent_id: usize, new_id: usize, old_id: usize) -> Result<()> {
         {
             let mut inner = self.inner.borrow_mut();
             inner.doc.insert_before(parent_id, new_id, old_id);
@@ -311,7 +315,7 @@ impl DocumentHandle {
         buf.push_structural(DomOp::InsertBefore { parent: parent_id, child: new_id, before: old_id });
         buf.push_structural(DomOp::RemoveChild { parent: parent_id, child: old_id });
         drop(buf);
-        self.schedule_flush();
+        self.schedule_flush_with_ctx(&ctx);
         Ok(())
     }
 
@@ -329,7 +333,7 @@ impl DocumentHandle {
     }
 
     #[qjs(rename = "setAttribute")]
-    pub fn set_attribute(&self, node_id: usize, name: String, value: String) -> Result<()> {
+    pub fn set_attribute<'js>(&mut self, ctx: Ctx<'js>, node_id: usize, name: String, value: String) -> Result<()> {
         let mut inner = self.inner.borrow_mut();
         inner.doc.set_attribute(node_id, &name, &value);
         let is_script = inner.doc.is_script_element(node_id);
@@ -337,7 +341,7 @@ impl DocumentHandle {
         drop(inner);
         if !is_script {
             self.patch_buffer.lock().unwrap().mark_attrs(node_id, attrs);
-            self.schedule_flush();
+            self.schedule_flush_with_ctx(&ctx);
         }
         Ok(())
     }
@@ -353,7 +357,7 @@ impl DocumentHandle {
     }
 
     #[qjs(rename = "removeAttribute")]
-    pub fn remove_attribute(&self, node_id: usize, name: String) -> Result<()> {
+    pub fn remove_attribute<'js>(&mut self, ctx: Ctx<'js>, node_id: usize, name: String) -> Result<()> {
         let mut inner = self.inner.borrow_mut();
         inner.doc.remove_attribute(node_id, &name);
         let is_script = inner.doc.is_script_element(node_id);
@@ -361,63 +365,52 @@ impl DocumentHandle {
         drop(inner);
         if !is_script {
             self.patch_buffer.lock().unwrap().mark_attrs(node_id, attrs);
-            self.schedule_flush();
+            self.schedule_flush_with_ctx(&ctx);
         }
         Ok(())
     }
-    
 
-    /// Register a JS callback to receive Events.
+    /// 注册 JS 回调接收来自 Blitz 的事件。
     ///
-    /// The callback is stored in context userdata (EventCallbackStore) so it is dropped with
-    /// the context before JS_FreeRuntime — preventing Persistent<Function> from outliving the
-    /// runtime. spawn_blocking only captures pure-Rust values (no Persistent<T>).
+    /// 每次调用替换旧端口（旧 handler 自动注销）。
+    /// spawn_blocking 在后台持续接收事件，每条事件通过 port.send() 推入宏任务队列，
+    /// handler 在 JS 线程反序列化并调用 callback。
+    /// port drop（DocumentHandle GC）时 recv_event() 返回 Err，loop 自然退出。
     #[qjs(rename = "onEvent")]
-    pub fn on_event<'js>(&self, ctx: Ctx<'js>, callback: Function<'js>) -> Result<()> {
-        // Update or create the context-scoped callback store.
-        let new_cb = SendPersistent(Persistent::save(&ctx, callback));
-        if let Some(store) = ctx.userdata::<EventCallbackStore>() {
-            *store.0.lock().unwrap() = Some(new_cb);
-        } else {
-            ctx.store_userdata(EventCallbackStore(Mutex::new(Some(new_cb))))?;
-        }
-
-        if self.event_loop_running.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
-
+    pub fn on_event<'js>(&mut self, ctx: Ctx<'js>, callback: Function<'js>) -> Result<()> {
         let Some(state) = &self.dom_state else { return Ok(()); };
-        let Some(host) = &self.host else { return Ok(()); };
+        let Some(mut registrar) = EventPortRegistrar::from_ctx(&ctx).map(|g| (*g).clone()) else {
+            return Ok(());
+        };
 
+        let cb = Persistent::save(&ctx, callback);
         let channel = Arc::clone(&state.channel);
-        let task_tx = host.io.task_tx.clone();
-        // spawn_blocking captures no Persistent<T> — only pure Rust values.
+
+        let port = registrar.register_js_event_port(QueueKind::Macro, move |ctx, payload| {
+            use webatom_blitz_msg::event::Event;
+            let Some(evt) = payload.downcast_ref::<Event>() else { return Ok(()); };
+            let json = serde_json::to_string(evt).unwrap_or_else(|_| "{}".to_string());
+            let json_str = rquickjs::String::from_str(ctx.clone(), &json)?;
+            let obj: rquickjs::Value = ctx.globals()
+                .get::<_, rquickjs::Object>("JSON")?
+                .get::<_, rquickjs::Function>("parse")?
+                .call((json_str,))?;
+            if let Ok(func) = cb.clone().restore(&ctx) {
+                func.call::<_, ()>((obj,))?;
+            }
+            Ok(())
+        });
+
+        // spawn_blocking 只持有纯 Rust 值（port clone + channel），无 Persistent<T>
+        let port_clone = port.clone();
         tokio::task::spawn_blocking(move || {
             while let Ok(evt) = channel.recv_event() {
-                let task: js_runtime::event_loop::MacroTask = Box::new(move |ctx: Ctx<'_>| {
-                    let json = serde_json::to_string(&evt).unwrap_or_else(|_| "{}".to_string());
-                    let json_str = rquickjs::String::from_str(ctx.clone(), &json)?;
-                    let obj: rquickjs::Value = ctx.globals()
-                        .get::<_, rquickjs::Object>("JSON")?
-                        .get::<_, rquickjs::Function>("parse")?
-                        .call((json_str,))?;
-                    // Retrieve callback from context userdata (JS thread only — safe to restore here).
-                    let func = ctx.userdata::<EventCallbackStore>()
-                        .and_then(|store| {
-                            store.0.lock().ok()
-                                .and_then(|g| g.as_ref().and_then(|p| p.restore(&ctx).ok()))
-                        });
-                    if let Some(func) = func {
-                        func.call::<_, ()>((obj,))?;
-                    }
-                    Ok(())
-                });
-                if task_tx.blocking_send(task).is_err() {
-                    break;
-                }
+                port_clone.send(evt);
             }
         });
 
+        // 替换旧端口：旧 EventPortGuard drop → cleanup 信号 → 旧 handler 注销
+        self.event_port = Some(port);
         Ok(())
     }
 }

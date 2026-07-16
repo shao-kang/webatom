@@ -15,7 +15,6 @@ async fn build_with_entry(path: &str) -> JsRuntime {
     JsRuntime::builder()
         .with_extension(DomExtension::with_state(state))
         .build()
-        .await
         .expect("runtime should build")
 }
 
@@ -25,13 +24,13 @@ async fn inline_classic_script_sets_global() {
     let mut rt = build_with_entry(FIXTURE).await;
 
     // 断言脚本在 HTML 脚本之后排入队列（FIFO），run() 自动排干后退出
-    rt.schedule_eval(
+    let () = rt.eval(
         "if (globalThis.__html_entry_ok !== true) \
          throw new Error('inline script did not run: __html_entry_ok = ' + globalThis.__html_entry_ok)",
     ).expect("schedule should succeed");
 
     // 释放 document（持有 DocumentHandle keepalive），使事件循环自然退出
-    rt.schedule_eval("globalThis.document = undefined")
+    let ()  = rt.eval("globalThis.document = undefined")
         .expect("schedule cleanup");
 
     rt.run().await.expect("event loop should complete without error");
@@ -42,13 +41,13 @@ async fn inline_classic_script_sets_global() {
 async fn multiple_scripts_run_in_order() {
     let mut rt = build_with_entry(FIXTURE).await;
 
-    rt.schedule_eval(
+    let () = rt.eval(
         "if (globalThis.__counter !== 1) \
          throw new Error('expected __counter=1, got: ' + globalThis.__counter)",
     ).expect("schedule should succeed");
 
     // 释放 document（持有 DocumentHandle keepalive），使事件循环自然退出
-    rt.schedule_eval("globalThis.document = undefined")
+    let ()  = rt.eval("globalThis.document = undefined")
         .expect("schedule cleanup");
 
     rt.run().await.expect("event loop should complete without error");

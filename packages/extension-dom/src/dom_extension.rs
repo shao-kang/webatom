@@ -111,8 +111,11 @@ impl Extension for DomExtension {
             env.set_state(ImportMapState::new());
         }
     }
-
-    fn js_modules(&self) -> &[(&'static str, &'static str)] {
-        &[("dom", include_str!("../js/dist/index.js"))]
+    fn global_js(&self) -> Option<&'static str> {
+        Some(include_str!("../js/dist/index.js"))
     }
+
+    // fn js_modules(&self) -> &[(&'static str, &'static str)] {
+    //     &[("webatom:domJs", ]
+    // }
 }
