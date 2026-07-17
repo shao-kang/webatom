@@ -69,12 +69,11 @@ fn main() {
 
         rt.block_on(async move {
             let entry: Arc<HtmlEntry> = match std::env::args().nth(1) {
-                Some(path) => HtmlEntry::load(path).await.expect("HTML 入口加载失败"),
-                None => Arc::new(HtmlEntry {
-                    url:      "file:///index.html".to_string(),
-                    base_url: "file:///".to_string(),
-                    content:  include_str!("../assets/index.html").to_string(),
-                }),
+                Some(path) => HtmlEntry::load_or_error(path, None).await,
+                None => Arc::new(HtmlEntry::new(
+                    format!("file://{}/assets/index.html", env!("CARGO_MANIFEST_DIR")),
+                    include_str!("../assets/index.html"),
+                )),
             };
 
             let state = DomExtensionState::new(js_side).with_entry(entry);

@@ -9,14 +9,14 @@ const FIXTURE: &str = concat!(
 #[tokio::test]
 async fn load_local_path() {
     let entry = HtmlEntry::load(FIXTURE).await.expect("should load local file");
-    assert!(entry.url.starts_with("file://"), "url={}", entry.url);
-    assert!(entry.base_url.ends_with('/'), "base_url must end with /: {}", entry.base_url);
+    assert!(entry.url().starts_with("file://"), "url={}", entry.url());
+    assert!(entry.base_url().ends_with('/'), "base_url must end with /: {}", entry.base_url());
     assert!(
-        !entry.base_url.contains("entry.html"),
+        !entry.base_url().contains("entry.html"),
         "base_url should not contain filename: {}",
-        entry.base_url
+        entry.base_url()
     );
-    assert!(entry.content.contains("Entry Test"), "content missing expected text");
+    assert!(entry.content().contains("Entry Test"), "content missing expected text");
 }
 
 /// base_url 应指向 fixtures/ 目录
@@ -24,9 +24,9 @@ async fn load_local_path() {
 async fn base_url_points_to_parent_dir() {
     let entry = HtmlEntry::load(FIXTURE).await.unwrap();
     assert!(
-        entry.base_url.contains("fixtures/"),
+        entry.base_url().contains("fixtures/"),
         "base_url should end with fixtures/: {}",
-        entry.base_url
+        entry.base_url()
     );
 }
 
@@ -35,8 +35,8 @@ async fn base_url_points_to_parent_dir() {
 async fn file_url_prefix_works() {
     let url = format!("file://{FIXTURE}");
     let entry = HtmlEntry::load(&url).await.unwrap();
-    assert!(entry.content.contains("Entry Test"));
-    assert_eq!(entry.url, url);
+    assert!(entry.content().contains("Entry Test"));
+    assert_eq!(entry.url(), url);
 }
 
 /// HTTP URL 在 Phase 1 应返回错误

@@ -19,7 +19,7 @@
 
             ],
             "env": {
-                "RUST_LOG": "error",
+                "RUST_LOG": "info",
                 "RUST_BACKTRACE": "full"
             }
         },

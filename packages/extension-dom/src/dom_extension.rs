@@ -56,11 +56,11 @@ impl DomExtensionState {
     }
 
     pub fn base_url(&self) -> Option<&str> {
-        self.entry.as_ref().map(|e| e.base_url.as_str())
+        self.entry.as_ref().map(|e| e.base_url())
     }
 
     pub fn html_content(&self) -> Option<&str> {
-        self.entry.as_ref().map(|e| e.content.as_str())
+        self.entry.as_ref().map(|e| e.content())
     }
 
     pub(crate) fn send_patch(&self, ops: Vec<DomOp>) {
