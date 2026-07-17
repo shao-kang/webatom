@@ -38,6 +38,17 @@ impl ImportMap {
         map.insert(specifier, target);
     }
 
+    /// 内部专用：静默插入（相同 key 直接覆盖，不发 tracing 警告）。
+    /// 用于 assemble() 注入扩展内部 specifier 的 identity mapping。
+    pub(crate) fn insert_internal(&self, specifier: impl Into<String>, target: impl Into<String>) {
+        let mut map = self.0.write().unwrap();
+        map.insert(specifier.into(), target.into());
+    }
+
+    pub(crate) fn has(&self, specifier: &str) -> bool {
+        self.0.read().unwrap().contains_key(specifier)
+    }
+
     /// 批量合并，重复 key 以新值覆盖，并通过 tracing 记录每条重复警告。
     pub fn extend(&self, entries: HashMap<String, String>) {
         let mut map = self.0.write().unwrap();
@@ -90,6 +101,10 @@ impl Resolver for EsmResolver {
     ) -> Result<String> {
         // import map 优先查找（覆盖所有形式的 key：bare specifier、URL、相对路径）
         if let Some(mapped) = self.import_map.resolve(name) {
+            // identity mapping（内部 native specifier）：直接返回，不再递归
+            if mapped == name {
+                return Ok(mapped);
+            }
             return self.resolve(ctx, base, &mapped, None);
         }
 

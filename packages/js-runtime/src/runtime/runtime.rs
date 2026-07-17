@@ -27,6 +27,24 @@ impl JsRuntime {
         let runtime = Runtime::new()?;
         let extensions = topological_sort(extensions);
 
+        // 为所有扩展的内部 specifier 注入 identity mapping，
+        // 使 EsmResolver 能通过 import map 解析 native module 的裸 specifier。
+        // 内部 specifier 优先级最高，若用户 import_map 中已有同名条目则先警告再覆盖。
+        for ext in &extensions {
+            for &spec in ext.native_module_specifiers() {
+                if import_map.has(spec) {
+                    eprintln!("[webatom] warning: user import map contains reserved internal specifier '{spec}', overriding");
+                }
+                import_map.insert_internal(spec, spec);
+            }
+            for (spec, _) in ext.js_modules() {
+                if import_map.has(*spec) {
+                    eprintln!("[webatom] warning: user import map contains reserved internal specifier '{spec}', overriding");
+                }
+                import_map.insert_internal(*spec, *spec);
+            }
+        }
+
         // 安装模块解析器，resolver 与 import_map 共享同一 Arc
         setup_module_system(&runtime, import_map.clone());
 
