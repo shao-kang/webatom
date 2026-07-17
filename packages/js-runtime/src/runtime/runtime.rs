@@ -6,7 +6,6 @@ use rquickjs::{Context, Runtime, FromJs};
 
 use crate::extension::{ExtensionEnv, ExtensionSet, Extension};
 use crate::event_loop::{EventLoop, RenderScheduler};
-use crate::event_loop::event_loop_impl::EventPortRegistrar;
 use crate::module::{ImportMap, setup_module_system};
 
 use super::JsRuntimeBuilder;
@@ -48,10 +47,10 @@ impl JsRuntime {
         // 安装模块解析器，resolver 与 import_map 共享同一 Arc
         setup_module_system(&runtime, import_map.clone());
 
-        let event_loop = EventLoop::new(runtime.clone(), cancel_token.clone(), render_scheduler);
-        let event_loop_rc = Rc::new(RefCell::new(event_loop));
         let context = Context::full(&runtime)?;
-        let event_port_registrar = EventPortRegistrar::new(event_loop_rc.clone(), context.clone());
+        let event_loop = EventLoop::new(runtime.clone(), cancel_token.clone(), render_scheduler, context.clone());
+        let event_port_registrar = event_loop.make_registrar();
+        let event_loop_rc = Rc::new(RefCell::new(event_loop));
         
         context.with(|js_ctx| {
             js_ctx.store_userdata(event_port_registrar.clone())?;

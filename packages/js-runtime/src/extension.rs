@@ -75,14 +75,14 @@ impl<'a> ExtensionEnv<'a> {
     }
 
     /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventPort`]。
-    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventPort
+    pub fn register_event_port<F>(&self, queue: QueueKind, handler: F) -> EventPort
     where
         F: FnMut(&dyn Any) + 'static,
     {
         self.ports.register_event_port(queue, handler)
     }
 
-    pub fn register_js_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventPort
+    pub fn register_js_event_port<F>(&self, queue: QueueKind, handler: F) -> EventPort
     where
         F: FnMut(Ctx<'_>, &dyn Any) -> rquickjs::Result<()> + 'static,
     {

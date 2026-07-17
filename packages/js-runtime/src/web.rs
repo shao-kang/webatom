@@ -20,7 +20,7 @@ pub fn default_extensions() -> Vec<Box<dyn Extension>> {
         Box::new(ConsoleExtension),
         // Box::new(MicrotaskExtension),
         // Box::new(StreamExtension),
-        // Box::new(TimerExtension),
+        Box::new(timer::TimerExtension),
         // Box::new(FetchExtension),
     ]
 }

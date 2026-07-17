@@ -11,6 +11,7 @@ pub struct JsRuntimeBuilder {
     cancel_token: Option<CancellationToken>,
     render_scheduler: Box<dyn RenderScheduler>,
     import_map: ImportMap,
+    load_default_extensions: bool,
 }
 
 impl Default for JsRuntimeBuilder {
@@ -20,6 +21,7 @@ impl Default for JsRuntimeBuilder {
             cancel_token: None,
             render_scheduler: Box::new(HeadlessRenderScheduler),
             import_map: ImportMap::new(),
+            load_default_extensions: true,
         }
     }
 }
@@ -36,6 +38,12 @@ impl JsRuntimeBuilder {
 
     pub fn with_extensions(mut self, mut exts: ExtensionSet) -> Self {
         self.extensions.append(&mut exts);
+        self
+    }
+
+    /// 禁用默认扩展（console / timer 等），仅加载通过 `with_extension` 手动添加的扩展。
+    pub fn without_default_extensions(mut self) -> Self {
+        self.load_default_extensions = false;
         self
     }
 
@@ -63,6 +71,12 @@ impl JsRuntimeBuilder {
 
     pub fn build(self) -> rquickjs::Result<JsRuntime> {
         let cancel_token = self.cancel_token.unwrap_or_else(CancellationToken::new);
-        JsRuntime::assemble(self.extensions, cancel_token, self.render_scheduler, self.import_map)
+        let mut extensions = self.extensions;
+        if self.load_default_extensions {
+            let mut defaults = crate::web::default_extensions();
+            defaults.append(&mut extensions);
+            extensions = defaults;
+        }
+        JsRuntime::assemble(extensions, cancel_token, self.render_scheduler, self.import_map)
     }
 }

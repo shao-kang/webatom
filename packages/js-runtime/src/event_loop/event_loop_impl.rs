@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 use slab::Slab;
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
-use rquickjs::{Context, Ctx, JsLifetime, Runtime, runtime::UserDataGuard};
+use rquickjs::{Context, Ctx, Runtime, runtime::UserDataGuard};
 
-use super::render_scheduler::{RenderScheduler};
+use super::render_scheduler::RenderScheduler;
 
 // ──────────────────────────────────────────────────────────────
 // 任务优先级分级
@@ -35,7 +35,7 @@ pub type HandlerId = usize;
 /// 跨线程传递的事件信封。
 ///
 /// 只携带 payload 和 handler_id；handler 本体留在 EventLoop 线程，
-/// 因此 handler 可持有 `Rc`、`RefCell` 等 `!Send` 数据。
+/// 因此 handler 可持有 `Rc`、`RefCell` 等单线程数据。
 ///
 /// `_keep_alive` 持有 `EventPortGuard` 的引用，保证 envelope 还在 channel 时
 /// handler 不会被提前清理。
@@ -83,6 +83,71 @@ impl EventPort {
 }
 
 // ──────────────────────────────────────────────────────────────
+// HandlerRegistry
+// ──────────────────────────────────────────────────────────────
+
+/// handler 注册表，由 `EventLoop` 和 `EventPortRegistrar` 共享（`Rc`）。
+///
+/// 使用 `Option<Box<...>>` slot：dispatch 时先 `take()` 取出 handler 再调用，
+/// 使调用期间 slab 不持有借用，handler 内部可安全地再次注册新 handler（重入安全）。
+struct HandlerRegistry {
+    slab: RefCell<Slab<Option<Box<dyn FnMut(&dyn Any)>>>>,
+    macro_tx: mpsc::UnboundedSender<EventEnvelope>,
+    idle_tx: mpsc::UnboundedSender<EventEnvelope>,
+    cleanup_tx: mpsc::UnboundedSender<HandlerId>,
+    notify: Arc<Notify>,
+    context: Context,
+}
+
+impl HandlerRegistry {
+    fn register<F>(&self, queue: QueueKind, handler: F) -> EventPort
+    where
+        F: FnMut(&dyn Any) + 'static,
+    {
+        let id = self.slab.borrow_mut().insert(Some(Box::new(handler)));
+        let tx = match queue {
+            QueueKind::Macro => self.macro_tx.clone(),
+            QueueKind::Idle  => self.idle_tx.clone(),
+        };
+        EventPort {
+            tx,
+            guard: Arc::new(EventPortGuard {
+                handler_id: id,
+                cleanup_tx: self.cleanup_tx.clone(),
+                notify: Arc::clone(&self.notify),
+            }),
+        }
+    }
+
+    /// dispatch 时先 take() 取出 handler，释放 slab 借用后再调用。
+    /// 这样 handler 执行期间可安全地调用 register()（重入安全）。
+    fn dispatch(&self, env: EventEnvelope) {
+        let mut handler = self.slab.borrow_mut()
+            .get_mut(env.handler_id)
+            .and_then(|slot| slot.take());
+
+        if let Some(ref mut h) = handler {
+            h(env.payload.as_ref());
+        }
+
+        // 调用结束后放回（若 slot 仍存在且为空）
+        if let Some(slot) = self.slab.borrow_mut().get_mut(env.handler_id) {
+            if slot.is_none() {
+                *slot = handler;
+            }
+        }
+    }
+
+    fn cleanup(&self, id: HandlerId) {
+        self.slab.borrow_mut().try_remove(id);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.slab.borrow().is_empty()
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
 // EventLoop
 // ──────────────────────────────────────────────────────────────
 
@@ -94,7 +159,7 @@ impl EventPort {
 ///
 /// 退出策略：
 /// - 主动退出：`cancel_token` 被取消时立即中止；
-/// - 自然退出：所有 EventPort 全部 drop（handlers 为空）且无待处理事件时自动退出。
+/// - 自然退出：所有 EventPort 全部 drop（registry 为空）且无待处理事件时自动退出。
 pub struct EventLoop {
     runtime: Runtime,
     cancel_token: CancellationToken,
@@ -106,12 +171,9 @@ pub struct EventLoop {
     macro_rx: mpsc::UnboundedReceiver<EventEnvelope>,
     idle_rx: mpsc::UnboundedReceiver<EventEnvelope>,
 
-    macro_tx: mpsc::UnboundedSender<EventEnvelope>,
-    idle_tx: mpsc::UnboundedSender<EventEnvelope>,
+    /// handler 注册表，与 EventPortRegistrar 共享。
+    registry: Rc<HandlerRegistry>,
 
-    handlers: Slab<Box<dyn FnMut(&dyn Any)>>,
-
-    cleanup_tx: mpsc::UnboundedSender<HandlerId>,
     cleanup_rx: mpsc::UnboundedReceiver<HandlerId>,
 
     idle_peeked: Option<EventEnvelope>,
@@ -119,12 +181,11 @@ pub struct EventLoop {
 }
 
 impl EventLoop {
-   
-
     pub fn new(
         runtime: Runtime,
         cancel_token: CancellationToken,
         mut scheduler: impl RenderScheduler,
+        context: Context,
     ) -> Self {
         let notify = Arc::new(Notify::new());
         let (raf_batch_tx, raf_batch_rx) = mpsc::unbounded_channel();
@@ -134,6 +195,15 @@ impl EventLoop {
 
         scheduler.connect(raf_batch_tx);
 
+        let registry = Rc::new(HandlerRegistry {
+            slab: RefCell::new(Slab::new()),
+            macro_tx,
+            idle_tx,
+            cleanup_tx,
+            notify: Arc::clone(&notify),
+            context,
+        });
+
         Self {
             runtime,
             cancel_token,
@@ -141,37 +211,17 @@ impl EventLoop {
             raf_batch_rx,
             macro_rx,
             idle_rx,
-            macro_tx,
-            idle_tx,
-            handlers: Slab::new(),
-            cleanup_tx,
+            registry,
             cleanup_rx,
             idle_peeked: None,
             idle_promote_timeout: Duration::from_millis(50),
         }
     }
 
-    /// 注册一个事件端口，返回可跨线程 Clone 的 [`EventPort`]。
-    ///
-    /// `handler` 不要求 `Send`，可持有 `Rc`、`RefCell` 等单线程数据。
-    /// 所有 [`EventPort`] clone 全部 drop 后，handler 自动从注册表移除。
-    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventPort
-    where
-        F: FnMut(&dyn Any) + 'static,
-    {
-        let id = self.handlers.insert(Box::new(handler));
-
-        let tx = match queue {
-            QueueKind::Macro => self.macro_tx.clone(),
-            QueueKind::Idle  => self.idle_tx.clone(),
-        };
-        EventPort {
-            tx,
-            guard: Arc::new(EventPortGuard {
-                handler_id: id,
-                cleanup_tx: self.cleanup_tx.clone(),
-                notify: self.notify.clone(),
-            }),
+    /// 创建与本 EventLoop 共享注册表的 [`EventPortRegistrar`]。
+    pub fn make_registrar(&self) -> EventPortRegistrar {
+        EventPortRegistrar {
+            registry: Rc::clone(&self.registry),
         }
     }
 
@@ -190,7 +240,7 @@ impl EventLoop {
             // ── 1. RAF：每帧由 RenderScheduler 推送批次，保证快照语义 ───
             while let Ok(raf_batch) = self.raf_batch_rx.try_recv() {
                 for env in raf_batch {
-                    Self::dispatch(&mut self.handlers, env);
+                    self.registry.dispatch(env);
                     self.drain_jobs();
                 }
                 progressed = true;
@@ -209,30 +259,31 @@ impl EventLoop {
             if idle_timed_out {
                 // ── 3a. Idle 超时：强制执行 ──────────────────────────────
                 let env = self.idle_peeked.take().unwrap();
-                Self::dispatch(&mut self.handlers, env);
+                self.registry.dispatch(env);
                 self.drain_jobs();
                 progressed = true;
             } else if let Ok(env) = self.macro_rx.try_recv() {
                 // ── 3b. Macro：一个 ──────────────────────────────────────
-                Self::dispatch(&mut self.handlers, env);
+                self.registry.dispatch(env);
                 self.drain_jobs();
                 progressed = true;
             } else if let Some(env) = self.idle_peeked.take() {
                 // ── 3c. Idle：macro 为空时正常执行 ───────────────────────
-                Self::dispatch(&mut self.handlers, env);
+                self.registry.dispatch(env);
                 self.drain_jobs();
                 progressed = true;
             }
-             // ── dispatch 后再 cleanup，保证已入队事件有机会执行 ─────────
+
+            // ── dispatch 后再 cleanup，保证已入队事件有机会执行 ─────────
             while let Ok(id) = self.cleanup_rx.try_recv() {
-                self.handlers.try_remove(id);
+                self.registry.cleanup(id);
             }
             if progressed {
                 continue;
             }
 
-            // ── 4. 全空：handlers 为空且队列无待处理事件时自然退出 ───────
-            if self.handlers.is_empty() && !self.has_pending_events() {
+            // ── 4. 全空：registry 为空且队列无待处理事件时自然退出 ───────
+            if self.registry.is_empty() && !self.has_pending_events() {
                 println!("🏁 [EventLoop] 所有任务完成，自动退出。");
                 break;
             }
@@ -260,8 +311,6 @@ impl EventLoop {
     }
 
     /// 循环执行所有待处理的 JS jobs（microtask checkpoint）。
-    ///
-    /// Job 抛出异常时记录日志并继续，不崩溃事件循环（对应浏览器的 unhandledrejection 行为）。
     fn drain_jobs(&self) {
         loop {
             match self.runtime.execute_pending_job() {
@@ -269,15 +318,6 @@ impl EventLoop {
                 Ok(false) => break,
                 Err(e) => eprintln!("[EventLoop] unhandled JS job exception: {:?}", e),
             }
-        }
-    }
-
-    fn dispatch(
-        handlers: &mut Slab<Box<dyn FnMut(&dyn Any)>>,
-        env: EventEnvelope,
-    ) {
-        if let Some(handler) = handlers.get_mut(env.handler_id) {
-            handler(env.payload.as_ref());
         }
     }
 }
@@ -288,36 +328,38 @@ impl EventLoop {
 
 /// 事件端口注册代理，在 Extension::setup 中使用。
 ///
-/// 只暴露注册能力，Extension 无需感知完整的 [`EventLoop`] 接口。
-#[derive(Clone, JsLifetime)]
+/// 只持有共享的 [`HandlerRegistry`] 和 QuickJS `Context`，
+/// 不持有整个 `EventLoop` 引用，因此 EventLoop::run() 期间也可安全注册新端口。
+#[derive(Clone)]
 pub struct EventPortRegistrar {
-    event_loop: Rc<RefCell<EventLoop>>,
-    context: Context,
+    registry: Rc<HandlerRegistry>,
+}
+
+// HandlerRegistry 只含 'static 数据（channel sender、Arc、RefCell<Slab>），
+// 无 JS 生命周期借用，手动实现 JsLifetime 是安全的。
+unsafe impl<'js> rquickjs::JsLifetime<'js> for EventPortRegistrar {
+    type Changed<'to> = EventPortRegistrar;
 }
 
 impl EventPortRegistrar {
-    pub fn new(event_loop: Rc<RefCell<EventLoop>>, context: Context) -> Self {
-        Self { event_loop, context }
-    }
-
     pub fn from_ctx<'c, 'js>(ctx: &'c Ctx<'js>) -> Option<UserDataGuard<'c, EventPortRegistrar>> {
         ctx.userdata::<EventPortRegistrar>()
     }
 
-    pub fn register_js_event_port<F>(&mut self, queue: QueueKind, mut handler: F) -> EventPort
+    pub fn register_js_event_port<F>(&self, queue: QueueKind, mut handler: F) -> EventPort
     where
         F: FnMut(Ctx<'_>, &dyn Any) -> rquickjs::Result<()> + 'static,
     {
-        let context = self.context.clone();
-        self.event_loop.borrow_mut().register_event_port(queue, move |payload: &dyn Any| {
+        let context = self.registry.context.clone();
+        self.registry.register(queue, move |payload: &dyn Any| {
             let _ = context.with(|ctx| handler(ctx, payload));
         })
     }
 
-    pub fn register_event_port<F>(&mut self, queue: QueueKind, handler: F) -> EventPort
+    pub fn register_event_port<F>(&self, queue: QueueKind, handler: F) -> EventPort
     where
         F: FnMut(&dyn Any) + 'static,
     {
-        self.event_loop.borrow_mut().register_event_port(queue, handler)
+        self.registry.register(queue, handler)
     }
 }

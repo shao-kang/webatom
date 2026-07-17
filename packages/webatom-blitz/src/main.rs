@@ -82,9 +82,8 @@ fn main() {
             let mut js_rt = JsRuntime::builder()
                 .with_extension(DomExtension::with_state(state))
                 .build()
-                .await
                 .expect("JS 运行时初始化失败");
-            let _ = js_rt.schedule_eval("console.log('hello worldAtom')");
+            // let _: () = js_rt.eval("console.log('hello worldAtom')");
 
             if let Err(e) = js_rt.run().await {
                 eprintln!("JS 事件循环错误: {e}");
