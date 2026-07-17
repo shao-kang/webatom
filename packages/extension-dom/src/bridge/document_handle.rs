@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use js_runtime::event_loop::event_loop_impl::{EventPort, EventPortRegistrar, QueueKind};
+use js_runtime::event_loop::event_loop_impl::{EventPortRegistrar, QueueKind};
 use js_runtime::extension::ExtensionEnv;
 use rquickjs::{Class, Ctx, Function, Persistent, Result, Value};
 use rquickjs::class::Trace;
@@ -20,19 +20,13 @@ use super::script::execute_script;
 pub struct DocumentHandle {
     #[qjs(skip_trace)]
     pub(crate) inner: Rc<RefCell<DocumentInner>>,
-    /// 持久 flush 端口，首次 schedule_flush 时注册，之后复用。
-    #[qjs(skip_trace)]
-    flush_port: Option<EventPort>,
-    /// true 表示已向 flush_port send(())，handler 还未执行（防止同步代码路径重复 send）。
+    /// 防止同一同步路径重复注册 flush port（send 后立即 drop port，不需要存储）。
     #[qjs(skip_trace)]
     flush_pending: Arc<AtomicBool>,
     #[qjs(skip_trace)]
     patch_buffer: Arc<Mutex<PatchBuffer>>,
     #[qjs(skip_trace)]
     dom_state: Option<DomExtensionState>,
-    /// 每次 on_event 替换；旧端口 drop → handler 自动注销。
-    #[qjs(skip_trace)]
-    event_port: Option<EventPort>,
 }
 
 unsafe impl<'js> rquickjs::JsLifetime<'js> for DocumentHandle {
@@ -41,36 +35,40 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for DocumentHandle {
 
 impl DocumentHandle {
     fn schedule_flush_with_ctx(&mut self, ctx: &Ctx<'_>) {
-        // 若已有 pending send 尚未被 handler 消费，不重复 send
+        // headless：无 Blitz 连接，不注册 flush port，事件循环自然退出
+        if self.dom_state.is_none() {
+            return;
+        }
+
+        // 同一同步路径已有 pending flush，不重复注册
         if self.flush_pending.swap(true, Ordering::AcqRel) {
             return;
         }
 
-        if self.flush_port.is_none() {
-            let Some(mut registrar) = EventPortRegistrar::from_ctx(ctx).map(|g| (*g).clone()) else {
-                self.flush_pending.store(false, Ordering::Release);
-                return;
-            };
-            let patch_buffer = Arc::clone(&self.patch_buffer);
-            let dom_state = self.dom_state.clone();
-            let pending = Arc::clone(&self.flush_pending);
-            let port = registrar.register_js_event_port(QueueKind::Macro, move |_ctx, _| {
-                // 先重置 pending，再 drain，使后续同步 DOM 变更可再次触发 flush
-                pending.store(false, Ordering::Release);
-                let ops = patch_buffer.lock().unwrap().drain_ops();
-                if !ops.is_empty() {
-                    if let Some(state) = &dom_state {
-                        state.send_patch(ops);
-                    }
-                }
-                Ok(())
-            });
-            self.flush_port = Some(port);
-        }
+        let Some(mut registrar) = EventPortRegistrar::from_ctx(ctx).map(|g| (*g).clone()) else {
+            self.flush_pending.store(false, Ordering::Release);
+            return;
+        };
 
-        if let Some(port) = &self.flush_port {
-            port.send(());
-        }
+        let patch_buffer = Arc::clone(&self.patch_buffer);
+        let dom_state = self.dom_state.clone();
+        let pending = Arc::clone(&self.flush_pending);
+
+        // 每次新建 single-use port，send 后立即 drop：
+        // EventEnvelope 里的 _keep_alive 已保证 handler 执行前 port 不被清理，
+        // DocumentHandle 无需额外持有 port，从而不阻止事件循环退出。
+        let port = registrar.register_js_event_port(QueueKind::Macro, move |_ctx, _| {
+            pending.store(false, Ordering::Release);
+            let ops = patch_buffer.lock().unwrap().drain_ops();
+            if !ops.is_empty() {
+                if let Some(state) = &dom_state {
+                    state.send_patch(ops);
+                }
+            }
+            Ok(())
+        });
+        port.send(());
+        // port 在此 drop → 若 EventEnvelope 也已 drop（handler 已执行），guard drop → handler 注销
     }
 }
 
@@ -85,11 +83,9 @@ impl DocumentHandle {
         let inner = Rc::new(RefCell::new(DocumentInner::new_html(&html)));
         Self {
             inner,
-            flush_port: None,
             flush_pending: Arc::new(AtomicBool::new(false)),
             patch_buffer: Arc::new(Mutex::new(PatchBuffer::new())),
             dom_state,
-            event_port: None,
         }
     }
 
@@ -401,16 +397,13 @@ impl DocumentHandle {
             Ok(())
         });
 
-        // spawn_blocking 只持有纯 Rust 值（port clone + channel），无 Persistent<T>
         let port_clone = port.clone();
         tokio::task::spawn_blocking(move || {
             while let Ok(evt) = channel.recv_event() {
                 port_clone.send(evt);
             }
+            // recv Err → Blitz 断开 → port_clone drop → handler 注销
         });
-
-        // 替换旧端口：旧 EventPortGuard drop → cleanup 信号 → 旧 handler 注销
-        self.event_port = Some(port);
         Ok(())
     }
 }

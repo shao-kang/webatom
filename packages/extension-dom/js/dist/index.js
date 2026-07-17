@@ -45,6 +45,12 @@ var Event$1 = class {
 		return [];
 	}
 };
+var CustomEvent = class extends Event$1 {
+	constructor(type, init) {
+		super(type, init);
+		this.detail = init?.detail ?? null;
+	}
+};
 var UIEvent = class extends Event$1 {
 	constructor(type, init) {
 		super(type, init);
@@ -197,6 +203,148 @@ var EventTarget = class {
 	}
 };
 //#endregion
+//#region src/interface/mutation-observer.ts
+let subtreeObserverCount = 0;
+const pendingObservers = [];
+let flushScheduled = false;
+function scheduleMicrotaskFlush() {
+	if (flushScheduled) return;
+	flushScheduled = true;
+	Promise.resolve().then(flushAll);
+}
+function flushAll() {
+	flushScheduled = false;
+	const batch = pendingObservers.splice(0);
+	for (const obs of batch) {
+		const records = obs.takeRecords();
+		if (records.length > 0) obs._callback(records, obs);
+	}
+}
+var MutationRecord = class {
+	constructor(init) {
+		this.attributeNamespace = null;
+		this.type = init.type;
+		this.target = init.target;
+		this.addedNodes = init.addedNodes ?? [];
+		this.removedNodes = init.removedNodes ?? [];
+		this.previousSibling = init.previousSibling ?? null;
+		this.nextSibling = init.nextSibling ?? null;
+		this.attributeName = init.attributeName ?? null;
+		this.oldValue = init.oldValue ?? null;
+	}
+};
+var MutationObserver = class {
+	constructor(callback) {
+		this._observations = /* @__PURE__ */ new Map();
+		this._records = [];
+		this._callback = callback;
+	}
+	observe(target, options = {}) {
+		if ((options.attributeOldValue != null || options.attributeFilter != null) && options.attributes == null) options = {
+			...options,
+			attributes: true
+		};
+		if (options.characterDataOldValue != null && options.characterData == null) options = {
+			...options,
+			characterData: true
+		};
+		if (!options.childList && !options.attributes && !options.characterData) throw new TypeError("MutationObserver.observe: at least one of childList, attributes, or characterData must be true");
+		const nodeEntries = target._mutationObservers;
+		const existingIdx = nodeEntries?.findIndex((e) => e.observer === this) ?? -1;
+		if (existingIdx >= 0) {
+			const oldOpts = nodeEntries[existingIdx].options;
+			if (oldOpts.subtree && !options.subtree) subtreeObserverCount--;
+			else if (!oldOpts.subtree && options.subtree) subtreeObserverCount++;
+			nodeEntries[existingIdx].options = options;
+		} else {
+			const entry = {
+				observer: this,
+				options
+			};
+			if (nodeEntries) nodeEntries.push(entry);
+			else target._mutationObservers = [entry];
+			if (options.subtree) subtreeObserverCount++;
+		}
+		this._observations.set(target, options);
+	}
+	disconnect() {
+		for (const [target, options] of this._observations) {
+			if (options.subtree) subtreeObserverCount--;
+			const list = target._mutationObservers;
+			if (list) {
+				const idx = list.findIndex((e) => e.observer === this);
+				if (idx >= 0) list.splice(idx, 1);
+				if (list.length === 0) delete target._mutationObservers;
+			}
+		}
+		this._observations.clear();
+		this._records = [];
+	}
+	takeRecords() {
+		const records = this._records;
+		this._records = [];
+		return records;
+	}
+	_enqueue(record) {
+		this._records.push(record);
+		if (!pendingObservers.includes(this)) pendingObservers.push(this);
+		scheduleMicrotaskFlush();
+	}
+};
+function forEachMatchingObserver(target, type, cb) {
+	const direct = target._mutationObservers;
+	if (direct) {
+		for (const { observer, options } of direct) if (typeMatches(options, type)) cb(observer, options);
+	}
+	if (subtreeObserverCount > 0) {
+		let anc = target.parentNode;
+		while (anc) {
+			const entries = anc._mutationObservers;
+			if (entries) {
+				for (const { observer, options } of entries) if (options.subtree && typeMatches(options, type)) cb(observer, options);
+			}
+			anc = anc.parentNode;
+		}
+	}
+}
+function typeMatches(options, type) {
+	return type === "childList" && !!options.childList || type === "attributes" && !!options.attributes || type === "characterData" && !!options.characterData;
+}
+function notifyChildList(target, addedNodes, removedNodes, previousSibling, nextSibling) {
+	if (!target._mutationObservers && subtreeObserverCount === 0) return;
+	const record = new MutationRecord({
+		type: "childList",
+		target,
+		addedNodes,
+		removedNodes,
+		previousSibling,
+		nextSibling
+	});
+	forEachMatchingObserver(target, "childList", (observer) => observer._enqueue(record));
+}
+function notifyAttribute(target, attributeName, oldValue) {
+	if (!target._mutationObservers && subtreeObserverCount === 0) return;
+	forEachMatchingObserver(target, "attributes", (observer, options) => {
+		if (options.attributeFilter && !options.attributeFilter.includes(attributeName)) return;
+		observer._enqueue(new MutationRecord({
+			type: "attributes",
+			target,
+			attributeName,
+			oldValue: options.attributeOldValue ? oldValue : null
+		}));
+	});
+}
+function notifyCharacterData(target, oldValue) {
+	if (!target._mutationObservers && subtreeObserverCount === 0) return;
+	forEachMatchingObserver(target, "characterData", (observer, options) => {
+		observer._enqueue(new MutationRecord({
+			type: "characterData",
+			target,
+			oldValue: options.characterDataOldValue ? oldValue : null
+		}));
+	});
+}
+//#endregion
 //#region src/interface/node.ts
 const NODE_CONSTANTS = {
 	ELEMENT_NODE: 1,
@@ -321,7 +469,9 @@ var Node = class Node extends EventTarget {
 		return this._ctx.nodeValue(this._handle);
 	}
 	set nodeValue(value) {
+		const oldValue = this._ctx.nodeValue(this._handle);
 		this._ctx.setNodeValue(this._handle, value);
+		notifyCharacterData(this, oldValue);
 	}
 	get textContent() {
 		const t = this.nodeType;
@@ -330,16 +480,27 @@ var Node = class Node extends EventTarget {
 		return this._collectText(this._handle);
 	}
 	set textContent(value) {
+		const removedNodes = [];
 		let child = this._ctx.firstChild(this._handle);
+		while (child) {
+			removedNodes.push(child);
+			child = this._ctx.nextSibling(child._handle);
+		}
+		child = this._ctx.firstChild(this._handle);
 		while (child) {
 			const next = this._ctx.nextSibling(child._handle);
 			this._ctx.removeChild(this._handle, child._handle);
 			child = next;
 		}
+		const addedNodes = [];
 		if (value) {
 			const textHandle = this._ctx.createTextNode(value);
 			this._ctx.appendChild(this._handle, textHandle);
+			const textNode = new Node(this._ctx, textHandle);
+			this._ctx._nodes.add(textNode);
+			addedNodes.push(textNode);
 		}
+		notifyChildList(this, addedNodes, removedNodes, null, null);
 	}
 	_collectText(h) {
 		let text = "";
@@ -352,20 +513,30 @@ var Node = class Node extends EventTarget {
 		return text;
 	}
 	appendChild(node) {
+		const prevSibling = this.lastChild;
 		this._ctx.appendChild(this._handle, node._handle);
+		notifyChildList(this, [node], [], prevSibling, null);
 		return node;
 	}
 	removeChild(child) {
+		const prev = child.previousSibling;
+		const next = child.nextSibling;
 		this._ctx.removeChild(this._handle, child._handle);
+		notifyChildList(this, [], [child], prev, next);
 		return child;
 	}
 	insertBefore(node, refChild) {
+		const prevSibling = refChild ? refChild.previousSibling : this.lastChild;
 		if (refChild === null) this._ctx.appendChild(this._handle, node._handle);
 		else this._ctx.insertBefore(this._handle, node._handle, refChild._handle);
+		notifyChildList(this, [node], [], prevSibling, refChild);
 		return node;
 	}
 	replaceChild(node, child) {
+		const prev = child.previousSibling;
+		const next = child.nextSibling;
 		this._ctx.replaceChild(this._handle, node._handle, child._handle);
+		notifyChildList(this, [node], [child], prev, next);
 		return child;
 	}
 	getRootNode(_options) {
@@ -625,6 +796,16 @@ var DocumentContext = class {
 	head() {
 		return this._wrapId(this._docHandle.head());
 	}
+	querySelector(scope, selector) {
+		const id = this._docHandle.querySelector(scope.nodeId, selector);
+		return this._wrapId(id);
+	}
+	querySelectorAll(scope, selector) {
+		return this._docHandle.querySelectorAll(scope.nodeId, selector).flatMap((id) => {
+			const n = this._wrapId(id);
+			return n ? [n] : [];
+		});
+	}
 	appendChild(parent, child) {
 		this._docHandle.appendChild(parent.nodeId, child.nodeId);
 		const parentNode = this._handleNodeMap.get(parent);
@@ -689,6 +870,12 @@ var Document = class extends Node {
 	}
 	createComment(data) {
 		return this._ctx.wrap(this._ctx.createComment(data));
+	}
+	querySelector(selector) {
+		return this._ctx.querySelector(this._handle, selector);
+	}
+	querySelectorAll(selector) {
+		return this._ctx.querySelectorAll(this._handle, selector);
 	}
 	getElementById(id) {
 		return this._findById(this._ctx._docHandle.firstChild(this._handle.nodeId), id);
@@ -771,10 +958,14 @@ var Element = class extends Node {
 		return this._ctx.getAttribute(this._handle, name);
 	}
 	setAttribute(name, value) {
+		const oldValue = this._ctx.getAttribute(this._handle, name);
 		this._ctx.setAttribute(this._handle, name, value);
+		notifyAttribute(this, name, oldValue);
 	}
 	removeAttribute(name) {
+		const oldValue = this._ctx.getAttribute(this._handle, name);
 		this._ctx.removeAttribute(this._handle, name);
+		notifyAttribute(this, name, oldValue);
 	}
 	hasAttribute(name) {
 		return this._ctx.hasAttribute(this._handle, name);
@@ -850,6 +1041,29 @@ var Element = class extends Node {
 			sib = this._ctx.previousSibling(sib._handle);
 		}
 		return null;
+	}
+	querySelector(selector) {
+		return this._ctx.querySelector(this._handle, selector);
+	}
+	querySelectorAll(selector) {
+		return this._ctx.querySelectorAll(this._handle, selector);
+	}
+	getElementsByTagName(qualifiedName) {
+		return this.querySelectorAll(qualifiedName);
+	}
+	getElementsByTagNameNS(_namespace, localName) {
+		return this.querySelectorAll(localName);
+	}
+	getElementsByClassName(classNames) {
+		const tokens = classNames.trim().split(/\s+/).filter(Boolean);
+		if (tokens.length === 0) return [];
+		return this.querySelectorAll(tokens.map((t) => `.${t}`).join(""));
+	}
+	getElementsByName(name) {
+		return this.querySelectorAll(`[name="${name}"]`);
+	}
+	getElementById(id) {
+		return this.querySelector(`#${id}`);
 	}
 	append(...nodes) {
 		for (const n of nodes) if (typeof n === "string") {
@@ -2189,12 +2403,15 @@ const windowDefs = {
 	pageXOffset: 0,
 	pageYOffset: 0,
 	Event: Event$1,
+	CustomEvent,
 	UIEvent,
 	KeyboardEvent,
 	MouseEvent,
 	FocusEvent,
 	InputEvent,
 	EventTarget,
+	MutationObserver,
+	MutationRecord,
 	setTimeout(fn, _ms) {
 		fn();
 		return 0;

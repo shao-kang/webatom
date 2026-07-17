@@ -248,10 +248,10 @@ async fn html_entry_query_selector() {
     rt.eval::<(), _>(
         r#"const h1 = document.querySelector('#title');
            if (h1 === null) throw new Error('should find #title via querySelector');
-           if (h1.tagName !== 'H1') throw new Error('expected H1, got ' + h1.tagName);"#
+           if (h1.tagName !== 'H1') throw new Error('expected H1, got ' + h1.tagName);
+           globalThis.document = undefined;"#
     ).expect("eval");
 
-    rt.eval::<(), _>("globalThis.document = undefined").expect("cleanup");
     rt.run().await.expect("event loop");
 }
 
@@ -262,15 +262,17 @@ async fn html_entry_query_selector() {
 async fn classic_script_runs_from_html_entry() {
     let rt = build_with_html(WITH_CLASSIC_SCRIPT).await;
 
+    // classic script 通过 macro task 在 run() 内执行，执行后 document GC 释放退出循环
+    rt.eval::<(), _>("globalThis.document = undefined").expect("cleanup");
+    rt.run().await.expect("event loop");
+
+    // run() 返回后验证 classic script 的副作用
     rt.eval::<(), _>(
         "if (globalThis.__value !== 42) \
              throw new Error('__value should be 42, got ' + globalThis.__value); \
          if (globalThis.__script_ran !== true) \
              throw new Error('__script_ran should be true');"
     ).expect("eval");
-
-    rt.eval::<(), _>("globalThis.document = undefined").expect("cleanup");
-    rt.run().await.expect("event loop");
 }
 
 // ── importmap ─────────────────────────────────────────────────────────────────

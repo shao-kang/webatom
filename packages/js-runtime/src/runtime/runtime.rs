@@ -127,7 +127,7 @@ impl JsRuntime {
         })
     }
 
-    pub async fn run(self) -> rquickjs::Result<()> {
+    pub async fn run(&self) -> rquickjs::Result<()> {
         self.event_loop.borrow_mut().run().await
     }
 }
