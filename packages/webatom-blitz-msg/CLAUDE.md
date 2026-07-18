@@ -15,8 +15,9 @@
 |---|---|
 | `snapshot.rs` | 全量快照类型：`DomSnapshot`、`SnapshotNode`、`SnapshotNodeData` |
 | `patch.rs` | 增量操作类型：`DomOp` |
-| `msg.rs` | 信道消息枚举：`DomMsg { Full / Patch }` |
-| `event.rs` | `Event`：Blitz → JS 的用户事件 |
+| `msg.rs` | 信道消息枚举：`DomMsg { Full / Patch / QueryLayout / LayoutNotifyRequest }` |
+| `event.rs` | `Event`：Blitz → JS 的用户事件、`RafTick`、`LayoutResult`、`LayoutNotify` |
+| `layout.rs` | `NodeLayout`：布局数据结构体 |
 | `channel.rs` | `create_channels()` 工厂 + 端口结构体 |
 
 > `dom_slot.rs` / `renderer.rs` 不属于这个 crate。
@@ -78,7 +79,7 @@ pub enum DomOp {
 }
 ```
 
-### DomMsg（信道消息，两种模式合并为一个枚举）
+### DomMsg（JS → Blitz）
 
 ```rust
 pub enum DomMsg {
@@ -86,6 +87,10 @@ pub enum DomMsg {
     Full(DomSnapshot),
     /// 正常帧：一批有序的增量操作
     Patch(Vec<DomOp>),
+    /// 异步查询指定节点布局；Blitz 完成本批次布局后通过 Event::LayoutResult 回调
+    QueryLayout { node_id: usize },
+    /// nextTick 语义：请求 Blitz 在当前 patch 应用并完成布局后发 Event::LayoutNotify 回调
+    LayoutNotifyRequest,
 }
 ```
 
@@ -99,6 +104,32 @@ pub enum Event {
     Resize   { width: u32, height: u32 },
     Focus    { node_id: usize },
     Blur     { node_id: usize },
+    /// vsync 信号：Blitz 渲染完一帧后发出，JS 侧据此触发 requestAnimationFrame 回调
+    /// 走独立的 bounded(1) channel，可跳帧，不混入 Event
+    RafTick,  // 已移至独立 raf channel，此处仅保留文档说明
+    /// 异步布局查询结果，对应 DomMsg::QueryLayout
+    LayoutResult(NodeLayout),
+    /// nextTick 回调：对应 DomMsg::LayoutNotifyRequest，当前 patch 已应用并完成布局
+    LayoutNotify,
+}
+```
+
+### NodeLayout（布局数据）
+
+```rust
+pub struct NodeLayout {
+    pub node_id: usize,
+    /// 相对于视口的位置与尺寸（对应 getBoundingClientRect）
+    pub x:      f32,
+    pub y:      f32,
+    pub width:  f32,
+    pub height: f32,
+    /// 元素 scrollLeft / scrollTop
+    pub scroll_left: f32,
+    pub scroll_top:  f32,
+    /// clientWidth / clientHeight（content + padding，不含滚动条）
+    pub client_width:  f32,
+    pub client_height: f32,
 }
 ```
 
@@ -107,16 +138,18 @@ pub enum Event {
 ## Channel 设计
 
 ```rust
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 
 pub struct JsSide {
-    pub dom_tx:   Sender<DomMsg>,       // JS → Blitz：发快照 / patch
-    pub event_rx: Receiver<Event>, // Blitz → JS：接用户事件
+    pub dom_tx:   Sender<DomMsg>,   // JS → Blitz：patch / query / notify request
+    pub event_rx: Receiver<Event>,  // Blitz → JS：用户事件 / 布局回调（不可丢）
+    pub raf_rx:   Receiver<()>,     // Blitz → JS：vsync 信号（bounded(1)，可跳帧）
 }
 
 pub struct BlitzSide {
-    pub dom_rx:   Receiver<DomMsg>,     // Blitz vsync 时取消息
-    pub event_tx: Sender<Event>,   // 投递用户事件到 JS
+    pub dom_rx:   Receiver<DomMsg>, // Blitz vsync 时取消息
+    pub event_tx: Sender<Event>,    // 投递事件/布局结果到 JS（不可丢）
+    pub raf_tx:   Sender<()>,       // vsync 后 try_send，满则静默跳帧
 }
 
 pub fn create_channels() -> (JsSide, BlitzSide) { ... }
@@ -124,10 +157,14 @@ pub fn create_channels() -> (JsSide, BlitzSide) { ... }
 
 ### 语义
 
-| 方向 | 消息 | 语义 |
-|---|---|---|
-| JS → Blitz | `DomMsg` | **最新批次优先**：vsync 时排干队列，`Patch` 按序合并，`Full` 触发后丢弃之前所有 `Patch` |
-| Blitz → JS | `Event` | **全量投递**，事件不可丢 |
+| 方向 | Channel | 消息 | 语义 |
+|---|---|---|---|
+| JS → Blitz | `dom_tx` (unbounded) | `DomMsg::Patch` | 按序合并，vsync 时 drain |
+| JS → Blitz | `dom_tx` (unbounded) | `DomMsg::Full` | 触发全量重建，丢弃之前所有 Patch |
+| JS → Blitz | `dom_tx` (unbounded) | `DomMsg::QueryLayout` | 异步查询，布局完成后回 `Event::LayoutResult` |
+| JS → Blitz | `dom_tx` (unbounded) | `DomMsg::LayoutNotifyRequest` | nextTick，布局完成后回 `Event::LayoutNotify` |
+| Blitz → JS | `event_tx` (unbounded) | `Event` | **全量投递，不可丢** |
+| Blitz → JS | `raf_tx` (bounded(1)) | `()` | vsync tick，**可跳帧**；`try_send` 满则静默丢弃 |
 
 **Blitz vsync 消费逻辑**：
 
@@ -169,8 +206,22 @@ fn drain_dom_msgs(rx: &Receiver<DomMsg>) -> Option<DomMsg> {
 JS 线程                                               Blitz 线程
 ──────────────────────                                ────────────────────
 DOM 变更 → 记录 DomOp
-rAF 结束 → send Patch(ops)  ──Sender<DomMsg>──────→  drain → apply_full / apply_patch
-首帧      → send Full(snap)                               │
-                                                          ↓
-event_rx.recv()  ←──────────Sender<Event>─────── winit 事件
+JS 执行/微任务耗尽
+  → send Patch(ops)          ──Sender<DomMsg>──→  drain → apply_patch → 布局
+首帧
+  → send Full(snap)          ──Sender<DomMsg>──→  apply_full → 布局
+                                                         │
+                                                         ↓ vsync（布局完成后）
+raf_rx.try_recv() ← ()        ←──Sender<()>────────── try_send(())  ← 跳帧安全
+rAF 回调（可能再次 send Patch）
+
+// 异步获取布局（getBoundingClientRect 等）
+send QueryLayout { node_id } ──Sender<DomMsg>──→  布局完成后
+event_rx ← LayoutResult      ←──Sender<Event>──── 发 Event::LayoutResult(NodeLayout)
+
+// nextTick：等当前 patch 应用并布局完成后回调
+send LayoutNotifyRequest     ──Sender<DomMsg>──→  布局完成后
+event_rx ← LayoutNotify      ←──Sender<Event>──── 发 Event::LayoutNotify
+
+event_rx ← Click/Key/…       ←──Sender<Event>──── winit 用户事件
 ```

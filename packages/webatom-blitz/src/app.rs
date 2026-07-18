@@ -1,6 +1,6 @@
 use anyrender_vello::VelloWindowRenderer;
 use blitz_shell::{BlitzApplication, BlitzShellEvent, BlitzShellProxy, WindowConfig};
-use webatom_blitz_msg::{BlitzSide, DomMsg};
+use webatom_blitz_msg::{BlitzSide, Event};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -56,14 +56,10 @@ impl ApplicationHandler for WebAtomApp {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-
-
         match event {
             WindowEvent::KeyboardInput { event: ref key_event, .. } => {
-                // Forward keyboard events to the JS event pump via Event channel
                 use winit::event::ElementState;
                 use winit::keyboard::{Key, NamedKey};
-                use webatom_blitz_msg::Event;
 
                 let key_str: String = match &key_event.logical_key {
                     Key::Named(n) => match n {
@@ -94,34 +90,31 @@ impl ApplicationHandler for WebAtomApp {
                 };
 
                 if !key_str.is_empty() {
-                    let blitz_evt = if key_event.state == ElementState::Pressed {
+                    let evt = if key_event.state == ElementState::Pressed {
                         Event::KeyDown { key: key_str, modifiers: 0 }
                     } else {
                         Event::KeyUp { key: key_str, modifiers: 0 }
                     };
-                    let _ = self.blitz_side.send_event(blitz_evt);
+                    self.blitz_side.send_event(evt);
                 }
             }
             WindowEvent::SurfaceResized(ref size) => {
-                use webatom_blitz_msg::Event;
-                let _ = self.blitz_side.send_event(Event::Resize {
+                self.blitz_side.send_event(Event::Resize {
                     width: size.width,
                     height: size.height,
                 });
             }
             WindowEvent::PointerMoved { position: ref pos, .. } => {
-                use webatom_blitz_msg::Event;
                 let (cx, cy) = self.inner.windows.values_mut()
                     .next()
                     .map(|w| { let c = w.pointer_coords(*pos); (c.client_x, c.client_y) })
                     .unwrap_or((pos.x as f32, pos.y as f32));
                 self.cursor_pos = (cx, cy);
-                let _ = self.blitz_side.send_event(Event::MouseMove { x: cx, y: cy });
+                self.blitz_side.send_event(Event::MouseMove { x: cx, y: cy });
             }
             WindowEvent::PointerButton { ref button, ref state, ref position, .. } => {
                 use std::time::{Duration, Instant};
                 use winit::event::{ButtonSource, ElementState, MouseButton};
-                use webatom_blitz_msg::Event;
 
                 const CLICK_DIST: f32 = 5.0;
                 const CLICK_MS: Duration = Duration::from_millis(300);
@@ -133,7 +126,6 @@ impl ApplicationHandler for WebAtomApp {
                     ButtonSource::Mouse(MouseButton::Middle) => 2,
                     _                                        => 3,
                 };
-                // Convert physical → logical coords and hit-test in one pass.
                 let (x, y, blitz_node) = self.inner.windows.values_mut()
                     .next()
                     .map(|w| {
@@ -148,14 +140,14 @@ impl ApplicationHandler for WebAtomApp {
                     .unwrap_or(0);
 
                 if *state == ElementState::Pressed {
-                    let _ = self.blitz_side.send_event(
+                    self.blitz_side.send_event(
                         Event::MouseDown { node_id: target_id, x, y, button: button_id },
                     );
                     if button_id == 0 {
                         self.mouse_press = Some((x, y, Instant::now()));
                     }
                 } else {
-                    let _ = self.blitz_side.send_event(
+                    self.blitz_side.send_event(
                         Event::MouseUp { node_id: target_id, x, y, button: button_id },
                     );
                     if button_id == 0 {
@@ -167,12 +159,12 @@ impl ApplicationHandler for WebAtomApp {
                                     .map_or(false, |t| now.duration_since(t) <= DBLCLICK_MS);
                                 if is_dbl {
                                     self.last_click_time = None;
-                                    let _ = self.blitz_side.send_event(
+                                    self.blitz_side.send_event(
                                         Event::DblClick { node_id: target_id, x, y },
                                     );
                                 } else {
                                     self.last_click_time = Some(now);
-                                    let _ = self.blitz_side.send_event(
+                                    self.blitz_side.send_event(
                                         Event::Click { node_id: target_id, x, y },
                                     );
                                 }
@@ -183,53 +175,57 @@ impl ApplicationHandler for WebAtomApp {
             }
             WindowEvent::MouseWheel { delta: ref d, .. } => {
                 use winit::event::MouseScrollDelta;
-                use webatom_blitz_msg::Event;
                 let (dx, dy) = match d {
                     MouseScrollDelta::LineDelta(x, y) => (*x * 20.0, *y * 20.0),
                     MouseScrollDelta::PixelDelta(p)   => (p.x as f32, p.y as f32),
                 };
-                let _ = self.blitz_side.send_event(Event::Scroll { delta_x: dx, delta_y: dy });
+                self.blitz_side.send_event(Event::Scroll { delta_x: dx, delta_y: dy });
             }
             _ => {}
         }
-
-
 
         self.inner.window_event(event_loop, window_id, event);
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        // Drain crossbeam dom channel, apply updates to blitz document
-        let mut latest_full: Option<webatom_blitz_msg::DomSnapshot> = None;
-        let mut patches: Vec<webatom_blitz_msg::DomOp> = Vec::new();
+        let Some(drain) = self.blitz_side.drain_dom_msgs() else {
+            self.inner.proxy_wake_up(event_loop);
+            return;
+        };
 
-        for msg in self.blitz_side.drain_dom_msgs() {
-            match msg {
-                DomMsg::Full(snap) => {
-                    latest_full = Some(snap);
-                    patches.clear();
-                }
-                DomMsg::Patch(ops) => {
-                    patches.extend(ops);
-                }
-            }
-        }
-
-        let has_updates = latest_full.is_some() || !patches.is_empty();
-
-        if has_updates {
-            for window in self.inner.windows.values_mut() {
-                let mut doc = window.doc.inner_mut();
-                if let Some(snap) = &latest_full {
+        // ── Apply DOM update ──────────────────────────────────────────────
+        use webatom_blitz_msg::DomUpdate;
+        for window in self.inner.windows.values_mut() {
+            let mut doc = window.doc.inner_mut();
+            match &drain.dom_update {
+                Some(DomUpdate::Full(snap)) => {
                     renderer::apply_full(&mut *doc, &mut self.id_map, snap);
                 }
-                if !patches.is_empty() {
-                    renderer::apply_patch(&mut *doc, &mut self.id_map, &patches);
+                Some(DomUpdate::Patch(ops)) => {
+                    renderer::apply_patch(&mut *doc, &mut self.id_map, ops);
                 }
-                drop(doc);
-                window.request_redraw();
+                None => {}
             }
+            // DocumentMutator already dropped → layout is flushed
+
+            // ── Reply to layout queries (layout is now valid) ─────────────
+            for &wa_id in &drain.layout_queries {
+                if let Some(layout) = renderer::query_layout(&*doc, &self.id_map, wa_id) {
+                    self.blitz_side.send_event(Event::LayoutResult(layout));
+                }
+            }
+
+            // ── Fire nextTick callbacks ───────────────────────────────────
+            for _ in 0..drain.notify_count {
+                self.blitz_side.send_event(Event::LayoutNotify);
+            }
+
+            drop(doc);
+            window.request_redraw();
         }
+
+        // ── Signal JS that a new frame is ready (skippable) ──────────────
+        self.blitz_side.try_send_raf_tick();
 
         self.inner.proxy_wake_up(event_loop);
     }

@@ -1,3 +1,5 @@
+use crate::layout::NodeLayout;
+
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Event {
@@ -19,4 +21,9 @@ pub enum Event {
     DblClick  { node_id: usize, x: f32, y: f32 },
     #[serde(rename_all = "camelCase")]
     Scroll    { delta_x: f32, delta_y: f32 },
+    /// 异步布局查询结果，对应 DomMsg::QueryLayout
+    #[serde(rename_all = "camelCase")]
+    LayoutResult(NodeLayout),
+    /// nextTick 回调：对应 DomMsg::LayoutNotifyRequest，当前 patch 已应用并完成布局
+    LayoutNotify,
 }

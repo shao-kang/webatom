@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use blitz_dom::{Attribute, BaseDocument, DocumentMutator};
 use markup5ever::{LocalName, Namespace, QualName};
-use webatom_blitz_msg::{DomOp, DomSnapshot, SnapshotNode, SnapshotNodeData};
+use webatom_blitz_msg::{DomOp, DomSnapshot, NodeLayout, SnapshotNode, SnapshotNodeData};
 
 use crate::node_id_map::NodeIdMap;
 
@@ -158,4 +158,32 @@ fn apply_op(mutator: &mut DocumentMutator<'_>, id_map: &mut NodeIdMap, op: &DomO
             }
         }
     }
+}
+
+/// 查询单个节点的布局数据，布局必须已经完成（DocumentMutator 已 drop）。
+/// 返回 None 表示节点不在 id_map 中或 blitz 中不存在。
+pub fn query_layout(
+    doc: &BaseDocument,
+    id_map: &NodeIdMap,
+    wa_node_id: usize,
+) -> Option<NodeLayout> {
+    let blitz_id = id_map.blitz_id(wa_node_id)?;
+    let node = doc.get_node(blitz_id)?;
+
+    let pos = node.absolute_position(0.0, 0.0);
+    let layout = &node.final_layout;
+
+    Some(NodeLayout {
+        node_id:      wa_node_id,
+        x:            pos.x,
+        y:            pos.y,
+        width:        layout.size.width,
+        height:       layout.size.height,
+        scroll_left:  node.scroll_offset.x as f32,
+        scroll_top:   node.scroll_offset.y as f32,
+        client_width:  layout.size.width  - layout.border.left - layout.border.right
+                       - layout.scrollbar_size.width,
+        client_height: layout.size.height - layout.border.top  - layout.border.bottom
+                       - layout.scrollbar_size.height,
+    })
 }
