@@ -8,8 +8,6 @@ use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 use rquickjs::{Context, Ctx, Runtime, runtime::UserDataGuard};
 
-use super::render_scheduler::RenderScheduler;
-
 // ──────────────────────────────────────────────────────────────
 // 任务优先级分级
 // ──────────────────────────────────────────────────────────────
@@ -17,7 +15,6 @@ use super::render_scheduler::RenderScheduler;
 /// 任务的调度优先级。
 ///
 /// 消费顺序：Macro → Idle。
-/// RAF 由 RenderScheduler 在 VSync 时机外部推送，不通过此枚举路由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueKind {
     /// 宏任务级别，对应 `setTimeout` / `setInterval`。
@@ -154,8 +151,6 @@ impl HandlerRegistry {
 /// 驱动 QuickJS 运行时的主事件循环。
 ///
 /// 持有两条按优先级分级的 channel（Macro / Idle），统一消费所有插件推送的事件。
-/// RAF 由外部 `RenderScheduler` 在 VSync 时机以 `Vec<EventEnvelope>` 批次推送，
-/// 不通过 `QueueKind` 路由，保证帧快照语义（rAF 内再注册不进入本帧）。
 ///
 /// 退出策略：
 /// - 主动退出：`cancel_token` 被取消时立即中止；
@@ -164,9 +159,6 @@ pub struct EventLoop {
     runtime: Runtime,
     cancel_token: CancellationToken,
     notify: Arc<Notify>,
-
-    /// 接收 RenderScheduler 每帧推送的 RAF 批次（已快照，可直接 dispatch）。
-    raf_batch_rx: mpsc::UnboundedReceiver<Vec<EventEnvelope>>,
 
     macro_rx: mpsc::UnboundedReceiver<EventEnvelope>,
     idle_rx: mpsc::UnboundedReceiver<EventEnvelope>,
@@ -184,16 +176,12 @@ impl EventLoop {
     pub fn new(
         runtime: Runtime,
         cancel_token: CancellationToken,
-        mut scheduler: impl RenderScheduler,
         context: Context,
     ) -> Self {
         let notify = Arc::new(Notify::new());
-        let (raf_batch_tx, raf_batch_rx) = mpsc::unbounded_channel();
         let (macro_tx, macro_rx) = mpsc::unbounded_channel();
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();
         let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
-
-        scheduler.connect(raf_batch_tx);
 
         let registry = Rc::new(HandlerRegistry {
             slab: RefCell::new(Slab::new()),
@@ -208,7 +196,6 @@ impl EventLoop {
             runtime,
             cancel_token,
             notify,
-            raf_batch_rx,
             macro_rx,
             idle_rx,
             registry,
@@ -237,16 +224,7 @@ impl EventLoop {
 
             let mut progressed = false;
 
-            // ── 1. RAF：每帧由 RenderScheduler 推送批次，保证快照语义 ───
-            while let Ok(raf_batch) = self.raf_batch_rx.try_recv() {
-                for env in raf_batch {
-                    self.registry.dispatch(env);
-                    self.drain_jobs();
-                }
-                progressed = true;
-            }
-
-            // ── 2. 填充 idle peek buffer ─────────────────────────────────
+            // ── 1. 填充 idle peek buffer ─────────────────────────────────
             if self.idle_peeked.is_none() {
                 self.idle_peeked = self.idle_rx.try_recv().ok();
             }
@@ -257,13 +235,13 @@ impl EventLoop {
                 .unwrap_or(false);
 
             if idle_timed_out {
-                // ── 3a. Idle 超时：强制执行 ──────────────────────────────
+                // ── 2a. Idle 超时：强制执行 ──────────────────────────────
                 let env = self.idle_peeked.take().unwrap();
                 self.registry.dispatch(env);
                 self.drain_jobs();
                 progressed = true;
             } else if let Ok(env) = self.macro_rx.try_recv() {
-                // ── 3b. Macro：一个 ──────────────────────────────────────
+                // ── 2b. Macro：一个 ──────────────────────────────────────
                 self.registry.dispatch(env);
                 self.drain_jobs();
                 progressed = true;
@@ -304,8 +282,7 @@ impl EventLoop {
     }
 
     fn has_pending_events(&self) -> bool {
-        !self.raf_batch_rx.is_empty()
-            || !self.macro_rx.is_empty()
+        !self.macro_rx.is_empty()
             || self.idle_peeked.is_some()
             || !self.idle_rx.is_empty()
     }

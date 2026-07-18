@@ -2,14 +2,12 @@ use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 pub use crate::extension::{Extension, ExtensionSet};
-use crate::event_loop::{HeadlessRenderScheduler, RenderScheduler};
 use crate::module::ImportMap;
 use super::runtime::JsRuntime;
 
 pub struct JsRuntimeBuilder {
     extensions: ExtensionSet,
     cancel_token: Option<CancellationToken>,
-    render_scheduler: Box<dyn RenderScheduler>,
     import_map: ImportMap,
     load_default_extensions: bool,
 }
@@ -19,7 +17,6 @@ impl Default for JsRuntimeBuilder {
         Self {
             extensions: Vec::new(),
             cancel_token: None,
-            render_scheduler: Box::new(HeadlessRenderScheduler),
             import_map: ImportMap::new(),
             load_default_extensions: true,
         }
@@ -52,11 +49,6 @@ impl JsRuntimeBuilder {
         self
     }
 
-    pub fn with_render_scheduler(mut self, scheduler: impl RenderScheduler + 'static) -> Self {
-        self.render_scheduler = Box::new(scheduler);
-        self
-    }
-
     /// 设置初始 import map（bare specifier → URL/path），以 HashMap 批量传入。
     pub fn with_import_map(mut self, map: HashMap<String, String>) -> Self {
         self.import_map = ImportMap::with_entries(map);
@@ -77,6 +69,6 @@ impl JsRuntimeBuilder {
             defaults.append(&mut extensions);
             extensions = defaults;
         }
-        JsRuntime::assemble(extensions, cancel_token, self.render_scheduler, self.import_map)
+        JsRuntime::assemble(extensions, cancel_token, self.import_map)
     }
 }

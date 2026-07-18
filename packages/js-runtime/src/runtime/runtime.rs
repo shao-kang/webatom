@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use rquickjs::{Context, Runtime, FromJs};
 
 use crate::extension::{ExtensionEnv, ExtensionSet, Extension};
-use crate::event_loop::{EventLoop, RenderScheduler};
+use crate::event_loop::EventLoop;
 use crate::module::{ImportMap, setup_module_system};
 
 use super::JsRuntimeBuilder;
@@ -20,7 +20,6 @@ impl JsRuntime {
     pub(crate) fn assemble(
         extensions: ExtensionSet,
         cancel_token: CancellationToken,
-        render_scheduler: Box<dyn RenderScheduler>,
         import_map: ImportMap,
     ) -> rquickjs::Result<Self> {
         let runtime = Runtime::new()?;
@@ -48,7 +47,7 @@ impl JsRuntime {
         setup_module_system(&runtime, import_map.clone());
 
         let context = Context::full(&runtime)?;
-        let event_loop = EventLoop::new(runtime.clone(), cancel_token.clone(), render_scheduler, context.clone());
+        let event_loop = EventLoop::new(runtime.clone(), cancel_token.clone(), context.clone());
         let event_port_registrar = event_loop.make_registrar();
         let event_loop_rc = Rc::new(RefCell::new(event_loop));
         
