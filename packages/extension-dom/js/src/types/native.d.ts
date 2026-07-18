@@ -58,5 +58,10 @@ declare module "webatom_ext_native:dom" {
       deltaX?: number;
       deltaY?: number;
     }) => void): void;
+
+    /** Register a one-shot rAF callback. Returns an id for cancellation. */
+    requestAnimationFrame(callback: (timestamp: number) => void): number;
+    /** Cancel a pending rAF callback by id. */
+    cancelAnimationFrame(id: number): void;
   }
 }

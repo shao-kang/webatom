@@ -1,9 +1,10 @@
+use std::cell::Cell;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use js_runtime::event_loop::event_loop_impl::{EventPortRegistrar, QueueKind};
+use js_runtime::event_loop::event_loop_impl::{EventPort, EventPortRegistrar, QueueKind};
 use js_runtime::extension::ExtensionEnv;
 use rquickjs::{Class, Ctx, Function, Persistent, Result, Value};
 use rquickjs::class::Trace;
@@ -27,6 +28,14 @@ pub struct DocumentHandle {
     patch_buffer: Arc<Mutex<PatchBuffer>>,
     #[qjs(skip_trace)]
     dom_state: Option<DomExtensionState>,
+    /// rAF 回调队列：(id, port)，port 内闭包持有 Persistent<Function>。
+    #[qjs(skip_trace)]
+    raf_queue: Rc<RefCell<Vec<(u32, EventPort)>>>,
+    #[qjs(skip_trace)]
+    raf_next_id: Rc<Cell<u32>>,
+    /// vsync watcher 是否已在运行，避免重复 spawn。
+    #[qjs(skip_trace)]
+    raf_watcher_running: Arc<AtomicBool>,
 }
 
 unsafe impl<'js> rquickjs::JsLifetime<'js> for DocumentHandle {
@@ -70,6 +79,55 @@ impl DocumentHandle {
         port.send(());
         // port 在此 drop → 若 EventEnvelope 也已 drop（handler 已执行），guard drop → handler 注销
     }
+
+    /// 若 vsync watcher 未在运行，启动一个 spawn_blocking 阻塞等待 raf_rx tick。
+    /// tick 到达后通过一个 single-use port 推入宏任务，在 JS 线程里排干 raf_queue。
+    fn maybe_start_raf_watcher(&self, state: &DomExtensionState, registrar: &EventPortRegistrar) {
+        if self.raf_watcher_running.swap(true, Ordering::AcqRel) {
+            return; // 已有 watcher 在运行
+        }
+
+        let channel = Arc::clone(&state.channel);
+        let raf_queue = Rc::clone(&self.raf_queue);
+        let watcher_running = Arc::clone(&self.raf_watcher_running);
+
+        // single-use port：vsync tick 到达后在 JS 线程排干 raf_queue
+        let port = registrar.register_js_event_port(QueueKind::Macro, move |_ctx, payload| {
+            let ts = payload.downcast_ref::<f64>().copied().unwrap_or(0.0);
+
+            // 快照：取走当前帧所有回调（在 JS 线程，Rc 安全）
+            let callbacks: Vec<(u32, EventPort)> = raf_queue.borrow_mut().drain(..).collect();
+            for (_, cb_port) in callbacks {
+                cb_port.send(ts);
+            }
+
+            // 允许下一帧重新启动 watcher
+            watcher_running.store(false, Ordering::Release);
+
+            // 若回调内部又注册了新 rAF，需要踢醒 Blitz 继续驱动帧循环
+            if !raf_queue.borrow().is_empty() {
+                channel.wake_blitz();
+            }
+
+            Ok(())
+        });
+
+        // spawn_blocking：阻塞等待一次 vsync tick，到达后 send 时间戳触发 JS handler
+        let channel2 = Arc::clone(&state.channel);
+        let port_clone = port.clone();
+        tokio::task::spawn_blocking(move || {
+            channel2.recv_raf_tick();
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64()
+                * 1000.0;
+            port_clone.send(ts);
+        });
+
+        // 踢醒 Blitz，触发首个 about_to_wait → raf_tick
+        state.channel.wake_blitz();
+    }
 }
 
 #[rquickjs::methods]
@@ -86,6 +144,9 @@ impl DocumentHandle {
             flush_pending: Arc::new(AtomicBool::new(false)),
             patch_buffer: Arc::new(Mutex::new(PatchBuffer::new())),
             dom_state,
+            raf_queue: Rc::new(RefCell::new(Vec::new())),
+            raf_next_id: Rc::new(Cell::new(1)),
+            raf_watcher_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -404,6 +465,47 @@ impl DocumentHandle {
             }
             // recv Err → Blitz 断开 → port_clone drop → handler 注销
         });
+        Ok(())
+    }
+
+    /// 注册 rAF 回调，返回 id。vsync 到达时执行一次后自动取消。
+    #[qjs(rename = "requestAnimationFrame")]
+    pub fn request_animation_frame<'js>(&mut self, ctx: Ctx<'js>, callback: Function<'js>) -> Result<u32> {
+        let Some(state) = &self.dom_state else {
+            // headless：直接用 performance.now() 模拟立即执行
+            callback.call::<_, ()>((0.0_f64,))?;
+            return Ok(0);
+        };
+        let Some(mut registrar) = EventPortRegistrar::from_ctx(&ctx).map(|g| (*g).clone()) else {
+            callback.call::<_, ()>((0.0_f64,))?;
+            return Ok(0);
+        };
+
+        let id = self.raf_next_id.get();
+        self.raf_next_id.set(id.wrapping_add(1));
+
+        let cb = Persistent::save(&ctx, callback);
+        let port = registrar.register_js_event_port(QueueKind::Macro, move |ctx, payload| {
+            let ts = payload.downcast_ref::<f64>().copied().unwrap_or(0.0);
+            if let Ok(func) = cb.clone().restore(&ctx) {
+                func.call::<_, ()>((ts,))?;
+            }
+            Ok(())
+        });
+
+        self.raf_queue.borrow_mut().push((id, port));
+
+        // 若 watcher 未运行，则启动一个 spawn_blocking 等待 vsync tick
+        self.maybe_start_raf_watcher(state, &registrar);
+
+        Ok(id)
+    }
+
+    /// 取消 rAF 回调。
+    #[qjs(rename = "cancelAnimationFrame")]
+    pub fn cancel_animation_frame(&mut self, id: u32) -> Result<()> {
+        // retain 移除对应 port，port drop → handler 自动注销
+        self.raf_queue.borrow_mut().retain(|(eid, _)| *eid != id);
         Ok(())
     }
 }

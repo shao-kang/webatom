@@ -57,6 +57,10 @@ impl ApplicationHandler for WebAtomApp {
         event: WindowEvent,
     ) {
         match event {
+            WindowEvent::RedrawRequested => {
+                // 真正渲染完一帧后发 raf tick，频率受 vsync 限制
+                self.blitz_side.try_send_raf_tick();
+            }
             WindowEvent::KeyboardInput { event: ref key_event, .. } => {
                 use winit::event::ElementState;
                 use winit::keyboard::{Key, NamedKey};
@@ -188,44 +192,44 @@ impl ApplicationHandler for WebAtomApp {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let Some(drain) = self.blitz_side.drain_dom_msgs() else {
-            self.inner.proxy_wake_up(event_loop);
-            return;
-        };
+        let drain = self.blitz_side.drain_dom_msgs();
 
-        // ── Apply DOM update ──────────────────────────────────────────────
-        use webatom_blitz_msg::DomUpdate;
-        for window in self.inner.windows.values_mut() {
-            let mut doc = window.doc.inner_mut();
-            match &drain.dom_update {
-                Some(DomUpdate::Full(snap)) => {
-                    renderer::apply_full(&mut *doc, &mut self.id_map, snap);
+        if let Some(ref drain) = drain {
+            // ── Apply DOM update ──────────────────────────────────────────────
+            use webatom_blitz_msg::DomUpdate;
+            for window in self.inner.windows.values_mut() {
+                let mut doc = window.doc.inner_mut();
+                match &drain.dom_update {
+                    Some(DomUpdate::Full(snap)) => {
+                        renderer::apply_full(&mut *doc, &mut self.id_map, snap);
+                    }
+                    Some(DomUpdate::Patch(ops)) => {
+                        renderer::apply_patch(&mut *doc, &mut self.id_map, ops);
+                    }
+                    None => {}
                 }
-                Some(DomUpdate::Patch(ops)) => {
-                    renderer::apply_patch(&mut *doc, &mut self.id_map, ops);
+
+                for &wa_id in &drain.layout_queries {
+                    if let Some(layout) = renderer::query_layout(&*doc, &self.id_map, wa_id) {
+                        self.blitz_side.send_event(Event::LayoutResult(layout));
+                    }
                 }
-                None => {}
-            }
-            // DocumentMutator already dropped → layout is flushed
 
-            // ── Reply to layout queries (layout is now valid) ─────────────
-            for &wa_id in &drain.layout_queries {
-                if let Some(layout) = renderer::query_layout(&*doc, &self.id_map, wa_id) {
-                    self.blitz_side.send_event(Event::LayoutResult(layout));
+                for _ in 0..drain.notify_count {
+                    self.blitz_side.send_event(Event::LayoutNotify);
                 }
-            }
 
-            // ── Fire nextTick callbacks ───────────────────────────────────
-            for _ in 0..drain.notify_count {
-                self.blitz_side.send_event(Event::LayoutNotify);
+                drop(doc);
+                window.request_redraw();
             }
-
-            drop(doc);
-            window.request_redraw();
         }
 
-        // ── Signal JS that a new frame is ready (skippable) ──────────────
-        self.blitz_side.try_send_raf_tick();
+        // 若 JS 有 rAF 消费者，持续 request_redraw 驱动帧循环
+        if self.blitz_side.has_raf_consumer() {
+            for window in self.inner.windows.values() {
+                window.request_redraw();
+            }
+        }
 
         self.inner.proxy_wake_up(event_loop);
     }

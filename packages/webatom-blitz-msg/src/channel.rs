@@ -78,6 +78,18 @@ impl JsSide {
     pub fn take_raf_tick(&self) -> bool {
         self.raf_rx.try_recv().is_ok()
     }
+
+    /// 阻塞等待下一个 RafTick（供 spawn_blocking watcher 使用）
+    pub fn recv_raf_tick(&self) {
+        let _ = self.raf_rx.recv();
+    }
+
+    /// 唤醒 Blitz winit 事件循环（不发送任何消息，仅触发 about_to_wait）
+    pub fn wake_blitz(&self) {
+        if let Ok(g) = self.wake_fn.try_lock() {
+            if let Some(f) = g.as_ref() { f(); }
+        }
+    }
 }
 
 impl BlitzSide {
@@ -96,6 +108,13 @@ impl BlitzSide {
     /// vsync 后发出 RafTick；channel 已满（JS 尚未消费上一帧）则静默跳帧
     pub fn try_send_raf_tick(&self) {
         let _ = self.raf_tx.try_send(());
+    }
+
+    /// JS 侧是否有 rAF watcher 在等待 tick（raf_tx channel 为空 = JS 已消费上帧 tick）
+    ///
+    /// Blitz 可据此决定是否持续 request_redraw 驱动帧循环。
+    pub fn has_raf_consumer(&self) -> bool {
+        self.raf_tx.is_empty()
     }
 
     /// vsync 时调用：排干队列，分离 DOM 操作与布局请求。

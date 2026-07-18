@@ -2387,8 +2387,9 @@ const screen = {
 	pixelDepth: 24
 };
 const _winEvTarget = new EventTarget();
+const _doc = new Document();
 const windowDefs = {
-	document: new Document(),
+	document: _doc,
 	location,
 	navigator,
 	history,
@@ -2422,10 +2423,11 @@ const windowDefs = {
 	},
 	clearInterval(_id) {},
 	requestAnimationFrame(fn) {
-		fn(0);
-		return 0;
+		return _doc._ctx._docHandle.requestAnimationFrame(fn);
 	},
-	cancelAnimationFrame(_id) {},
+	cancelAnimationFrame(id) {
+		_doc._ctx._docHandle.cancelAnimationFrame(id);
+	},
 	scrollTo(_x, _y) {},
 	scroll(_x, _y) {},
 	getComputedStyle(_el) {

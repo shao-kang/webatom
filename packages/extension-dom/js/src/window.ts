@@ -65,12 +65,13 @@ const screen = {
 // ── Window-level EventTarget ──────────────────────────────────────────────
 
 const _winEvTarget = new EventTarget();
+const _doc = new Document();
 
 // ── Window object ─────────────────────────────────────────────────────────
 
 const windowDefs: Record<string, unknown> = {
 
-  document: new Document(),
+  document: _doc,
   location,
   navigator,
   history,
@@ -101,8 +102,14 @@ const windowDefs: Record<string, unknown> = {
   clearTimeout(_id: number): void                    {},
   setInterval(_fn: () => void, _ms?: number): number { return 0; },
   clearInterval(_id: number): void                   {},
-  requestAnimationFrame(fn: (t: number) => void): number { fn(0); return 0; },
-  cancelAnimationFrame(_id: number): void            {},
+
+  // rAF — delegate to DocumentHandle native methods
+  requestAnimationFrame(fn: (t: number) => void): number {
+    return _doc._ctx._docHandle.requestAnimationFrame(fn);
+  },
+  cancelAnimationFrame(id: number): void {
+    _doc._ctx._docHandle.cancelAnimationFrame(id);
+  },
 
   // Scroll stubs
   scrollTo(_x?: number | ScrollToOptions, _y?: number): void {},
