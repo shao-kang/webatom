@@ -57,10 +57,7 @@ impl ApplicationHandler for WebAtomApp {
         event: WindowEvent,
     ) {
         match event {
-            WindowEvent::RedrawRequested => {
-                // 真正渲染完一帧后发 raf tick，频率受 vsync 限制
-                self.blitz_side.try_send_raf_tick();
-            }
+         
             WindowEvent::KeyboardInput { event: ref key_event, .. } => {
                 use winit::event::ElementState;
                 use winit::keyboard::{Key, NamedKey};
@@ -220,14 +217,7 @@ impl ApplicationHandler for WebAtomApp {
                 }
 
                 drop(doc);
-                window.request_redraw();
-            }
-        }
-
-        // 若 JS 有 rAF 消费者，持续 request_redraw 驱动帧循环
-        if self.blitz_side.has_raf_consumer() {
-            for window in self.inner.windows.values() {
-                window.request_redraw();
+                // window.request_redraw();
             }
         }
 
