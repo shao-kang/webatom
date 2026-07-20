@@ -6,7 +6,7 @@ use rquickjs::{Context, Runtime, FromJs};
 
 use crate::extension::{ExtensionEnv, ExtensionSet, Extension};
 use crate::event_loop::EventLoop;
-use crate::module::{ImportMap, setup_module_system};
+use crate::module::{EsmResolver, FileLoader, ImportMap};
 
 use super::JsRuntimeBuilder;
 
@@ -25,9 +25,6 @@ impl JsRuntime {
         let runtime = Runtime::new()?;
         let extensions = topological_sort(extensions);
 
-        // 为所有扩展的内部 specifier 注入 identity mapping，
-        // 使 EsmResolver 能通过 import map 解析 native module 的裸 specifier。
-        // 内部 specifier 优先级最高，若用户 import_map 中已有同名条目则先警告再覆盖。
         for ext in &extensions {
             for &spec in ext.native_module_specifiers() {
                 if import_map.has(spec) {
@@ -43,26 +40,24 @@ impl JsRuntime {
             }
         }
 
-        // 安装模块解析器，resolver 与 import_map 共享同一 Arc
-        setup_module_system(&runtime, import_map.clone());
+        // 收集所有 extension 的扩展 resolver/loader，组装后一次 set_loader
+        let mut esm_resolver = EsmResolver::new(import_map.clone());
+        let mut file_loader = FileLoader::new();
+        for ext in &extensions {
+            for f in ext.extra_resolvers() { esm_resolver.add_resolver(f); }
+            for f in ext.extra_loaders()   { file_loader.add_loader(f); }
+        }
+        runtime.set_loader(esm_resolver, file_loader);
 
         let context = Context::full(&runtime)?;
         let event_loop = EventLoop::new(runtime.clone(), cancel_token.clone(), context.clone());
         let event_port_registrar = event_loop.make_registrar();
         let event_loop_rc = Rc::new(RefCell::new(event_loop));
-        
+
         context.with(|js_ctx| {
             js_ctx.store_userdata(event_port_registrar.clone())?;
             Ok::<(), rquickjs::Error>(())
         })?;
-
-        // ctx.with(|js_ctx| {
-        //     js_ctx.store_userdata(RoomMemoryCenter {
-        //         global: Mutex::new(GlobalRoomStorage::new(cancel_token.clone())),
-        //         private_manifest: Mutex::new(HashMap::new()),
-        //     })?;
-        //     Ok::<(), rquickjs::Error>(())
-        // })?;
 
         for ext in &extensions {
             let mut env = ExtensionEnv::new(
@@ -78,12 +73,10 @@ impl JsRuntime {
 
         context.with(|js_ctx| {
             for ext in &extensions {
-                // 用户可 import 的 JS 模块
                 for (specifier, source) in ext.js_modules() {
                     let module = rquickjs::Module::declare(js_ctx.clone(), *specifier, *source)?;
                     module.eval()?;
                 }
-                // globalThis 绑定（以 ESM 执行，可 import 原生模块）
                 if let Some(source) = ext.global_js() {
                     let boot_name = format!("@{}-globals", ext.name());
                     let module = rquickjs::Module::declare(js_ctx.clone(), boot_name, source)?;

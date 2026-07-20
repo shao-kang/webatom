@@ -115,6 +115,34 @@ impl Extension for DomExtension {
         Some(include_str!("../js/dist/index.js"))
     }
 
+    fn extra_loaders(&self) -> Vec<Box<dyn FnMut(&str) -> Option<String> + Send>> {
+        vec![Box::new(|name: &str| {
+            if !name.starts_with("http://") && !name.starts_with("https://") {
+                return None;
+            }
+            let url = name.to_string();
+            // QuickJS executes synchronously inside a tokio thread, so we can't
+            // call block_on directly. Spawn a dedicated thread with its own
+            // single-threaded runtime to do the fetch without deadlocking.
+            let result = std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?
+                    .block_on(async move {
+                        reqwest::get(&url).await.ok()?.text().await.ok()
+                    })
+            })
+            .join()
+            .ok()
+            .flatten();
+            if result.is_none() {
+                tracing::error!("http module load failed: {name}");
+            }
+            result
+        })]
+    }
+
     // fn js_modules(&self) -> &[(&'static str, &'static str)] {
     //     &[("webatom:domJs", ]
     // }

@@ -225,7 +225,22 @@ fn resolve_url(src: &str, base_url: Option<&str>) -> String {
         return src.to_owned();
     }
     if src.starts_with('/') {
-        return format!("file://{src}");
+        // 绝对路径：相对于 origin（协议+host+port），而非文件系统根目录。
+        // base_url 是 http(s) 时取 origin 拼接；file:// 时回退文件系统绝对路径。
+        return match base_url {
+            Some(base) if base.starts_with("http://") || base.starts_with("https://") => {
+                // 取 origin：协议到第三个 `/` 之前的部分
+                let origin = base
+                    .split_once("://")
+                    .and_then(|(scheme, rest)| {
+                        let host_end = rest.find('/').map(|i| i + scheme.len() + 3).unwrap_or(base.len());
+                        Some(&base[..host_end])
+                    })
+                    .unwrap_or(base);
+                format!("{origin}{src}")
+            }
+            _ => format!("file://{src}"),
+        };
     }
     match base_url {
         Some(base) => {

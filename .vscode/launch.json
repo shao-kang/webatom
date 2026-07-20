@@ -16,7 +16,7 @@
                 ]
             },
             "args": [
-
+                "https://dev.xiutua.com/"
             ],
             "env": {
                 "RUST_LOG": "info",

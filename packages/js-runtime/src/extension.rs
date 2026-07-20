@@ -112,6 +112,18 @@ pub trait Extension: Send + Sync + 'static {
     fn global_js(&self) -> Option<&'static str> {
         None
     }
+
+    /// 额外的模块路径解析函数。`(base, name) -> Option<resolved>`，返回 `Some` 则命中。
+    /// 在默认 `EsmResolver` 逻辑之前尝试，按注册顺序依次调用。
+    fn extra_resolvers(&self) -> Vec<Box<dyn FnMut(&str, &str) -> Option<String> + Send>> {
+        vec![]
+    }
+
+    /// 额外的模块源码加载函数。`name -> Option<source>`，返回 `Some` 则命中。
+    /// 在默认文件系统加载之前尝试，按注册顺序依次调用。
+    fn extra_loaders(&self) -> Vec<Box<dyn FnMut(&str) -> Option<String> + Send>> {
+        vec![]
+    }
 }
 
 pub type ExtensionSet = Vec<Box<dyn Extension>>;

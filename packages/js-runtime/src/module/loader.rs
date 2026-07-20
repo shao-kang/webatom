@@ -1,10 +1,44 @@
 use rquickjs::{Ctx, Error, Module, Result};
 use rquickjs::loader::{ImportAttributes, Loader};
 
-pub struct FileLoader;
+/// `name -> Option<source_code>`
+/// 返回 `Some` 表示命中，`None` 交给默认文件系统逻辑。
+type LoaderFn = Box<dyn FnMut(&str) -> Option<String> + Send>;
+
+pub struct FileLoader {
+    extras: Vec<LoaderFn>,
+}
+
+impl Default for FileLoader {
+    fn default() -> Self {
+        Self { extras: Vec::new() }
+    }
+}
+
+impl FileLoader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 注册扩展加载函数，在文件系统加载之前尝试。
+    /// 返回 `Some(source)` 命中；`None` 继续走文件系统。
+    pub fn add_loader<F>(&mut self, f: F)
+    where
+        F: FnMut(&str) -> Option<String> + Send + 'static,
+    {
+        self.extras.push(Box::new(f));
+    }
+}
 
 impl Loader for FileLoader {
     fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str, _attr: Option<ImportAttributes<'js>>) -> Result<Module<'js>> {
+        // 先试扩展加载器
+        for extra in &mut self.extras {
+            if let Some(source) = extra(name) {
+                return Module::declare(ctx.clone(), name, source);
+            }
+        }
+
         if name.starts_with("data:") {
             let source = decode_data_url(name)
                 .ok_or_else(|| Error::new_loading_message(name, "invalid data: URL"))?;
