@@ -1,10 +1,10 @@
 [workspace]
 members = [
     "packages/js-runtime",
-    "packages/js-runtime-macro",
     "packages/extension-dom",
     "packages/webatom-blitz",
     "packages/webatom-blitz-msg",
+    "packages/extension-web-common",
 ]
 resolver = "3"
 
@@ -19,5 +19,5 @@ reqwest     = { version = "0.12", features = ["gzip"] }
 tokio       = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
 webatom-js-runtime = { path = "packages/js-runtime" }
 webatom-blitz-msg = { path = "packages/webatom-blitz-msg" }
-webatom-js-runtime-macro = { path = "packages/js-runtime-macro" }
 webatom_extension_dom = { path = "packages/extension-dom" }
+webatom_extension_web_common = { path = "packages/extension-web-common" }

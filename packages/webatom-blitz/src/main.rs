@@ -4,7 +4,7 @@ use js_runtime::JsRuntime;
 use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 use webatom_blitz_msg::create_channels;
 use webatom_extension_dom::{DomExtension, DomExtensionState, html_entry::HtmlEntry};
-
+use webatom_extension_web_common::WebCommonExtension;
 // ── JS console → clean stdout/stderr ─────────────────────────────────────
 
 struct JsConsoleLayer;
@@ -79,6 +79,7 @@ fn main() {
             let state = DomExtensionState::new(js_side).with_entry(entry);
 
             let mut js_rt = JsRuntime::builder()
+                .with_extension(WebCommonExtension::new())
                 .with_extension(DomExtension::with_state(state))
                 .build()
                 .expect("JS 运行时初始化失败");

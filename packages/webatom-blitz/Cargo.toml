@@ -11,6 +11,8 @@ path = "src/main.rs"
 webatom-blitz-msg       = { workspace = true }
 webatom-js-runtime      = { workspace = true }
 webatom_extension_dom   = { workspace = true }
+webatom_extension_web_common = { workspace = true }
+
 tokio                   = { workspace = true }
 #winit             = { workspace = true }
 crossbeam-channel = "0.5"

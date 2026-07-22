@@ -1,0 +1,11 @@
+{
+	"scripts": {
+		"build": "rolldown -c"
+	},
+	"devDependencies": {
+		"rolldown": "^1.2.0"
+	},
+	"dependencies": {
+		"whatwg-url": "^17.1.0"
+	}
+}

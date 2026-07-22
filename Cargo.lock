@@ -4936,6 +4936,7 @@ dependencies = [
  "webatom-blitz-msg",
  "webatom-js-runtime",
  "webatom_extension_dom",
+ "webatom_extension_web_common",
  "winit",
 ]
 
@@ -4959,12 +4960,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "webatom-js-runtime-macro",
 ]
-
-[[package]]
-name = "webatom-js-runtime-macro"
-version = "0.1.0"
 
 [[package]]
 name = "webatom_extension_dom"
@@ -4981,7 +4977,15 @@ dependencies = [
  "tracing-subscriber",
  "webatom-blitz-msg",
  "webatom-js-runtime",
- "webatom-js-runtime-macro",
+]
+
+[[package]]
+name = "webatom_extension_web_common"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tracing-subscriber",
+ "webatom-js-runtime",
 ]
 
 [[package]]

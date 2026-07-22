@@ -1,0 +1,15 @@
+[package]
+name = "webatom_extension_web_common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+webatom-js-runtime = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { workspace = true }
+
+[[test]]
+name = "url"
+path = "test/url/url.rs"
